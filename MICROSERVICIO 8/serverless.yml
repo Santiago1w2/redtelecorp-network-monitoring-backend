@@ -1,0 +1,96 @@
+# Microservicio 8 - Field Operations / Red TeleCorp
+# Desplegar desde esta carpeta: serverless deploy --stage dev
+service: redtelecorp-field-operations
+frameworkVersion: '4'
+
+provider:
+  name: aws
+  region: us-east-1
+  stage: dev
+  runtime: python3.13
+  architecture: x86_64
+  memorySize: 256
+  timeout: 20
+  logRetentionInDays: 7
+  httpApi:
+    name: ${self:service}-${sls:stage}-api
+    cors: true   # MVP: integrar autenticacion/Cognito antes de usar datos reales
+  environment:
+    TECHNICIANS_TABLE: !Ref TechniciansTable
+    WORK_ORDERS_TABLE: !Ref WorkOrdersTable
+    EVENT_BUS: default
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:PutItem
+            - dynamodb:GetItem
+            - dynamodb:UpdateItem
+            - dynamodb:Scan
+            - dynamodb:Query
+          Resource:
+            - !GetAtt TechniciansTable.Arn
+            - !GetAtt WorkOrdersTable.Arn
+            - !Sub '${TechniciansTable.Arn}/index/*'
+        - Effect: Allow
+          Action:
+            - events:PutEvents
+          Resource:
+            - !Sub 'arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default'
+
+functions:
+  fieldOperations:
+    name: ${self:service}-${sls:stage}
+    handler: field_operations.lambda_handler
+    events:
+      - httpApi: { method: POST,  path: /technicians }
+      - httpApi: { method: GET,   path: /technicians }
+      - httpApi: { method: GET,   path: '/technicians/{id}' }
+      - httpApi: { method: PATCH, path: '/technicians/{id}' }
+      - httpApi: { method: POST,  path: /work-orders }
+      - httpApi: { method: GET,   path: /work-orders }
+      - httpApi: { method: GET,   path: '/work-orders/{id}' }
+      - httpApi: { method: POST,  path: '/work-orders/{id}/assign' }
+      - httpApi: { method: PATCH, path: '/work-orders/{id}/status' }
+      # Contrato para el microservicio 5; origen: bus EventBridge default.
+      - eventBridge:
+          pattern:
+            source:
+              - redtelecorp.incident-management
+            detail-type:
+              - IncidentNeedsTechnician
+
+resources:
+  Resources:
+    TechniciansTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${sls:stage}-technicians
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: technicianId
+            AttributeType: S
+          - AttributeName: zoneId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: technicianId
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: zoneId-index
+            KeySchema:
+              - AttributeName: zoneId
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+    WorkOrdersTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${sls:stage}-work-orders
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: workOrderId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: workOrderId
+            KeyType: HASH
