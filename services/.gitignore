@@ -1,0 +1,24 @@
+# Solo se versionan los handlers y serverless.yml de estas tres APIs.
+/*
+!/.gitignore
+!/network-telemetry/
+!/coverage-geospatial/
+!/notifications/
+
+/network-telemetry/*
+!/network-telemetry/serverless.yml
+!/network-telemetry/handlers/
+/network-telemetry/handlers/*
+!/network-telemetry/handlers/*.py
+
+/coverage-geospatial/*
+!/coverage-geospatial/serverless.yml
+!/coverage-geospatial/handlers/
+/coverage-geospatial/handlers/*
+!/coverage-geospatial/handlers/*.py
+
+/notifications/*
+!/notifications/serverless.yml
+!/notifications/handlers/
+/notifications/handlers/*
+!/notifications/handlers/*.py

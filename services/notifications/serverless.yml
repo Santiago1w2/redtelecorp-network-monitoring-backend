@@ -1,0 +1,946 @@
+# Solo se necesitan este serverless.yml y los archivos handlers/*.py.
+# Instalar Serverless Framework y usar `serverless` (en PowerShell `sls` es Select-String).
+# Configurar --param="frontendOrigin=https://tu-frontend" y
+# --param="identityAuthorizerArn=<ARN real del authorizer de Identity 01>".
+# Identity debe autorizar API Gateway externamente y devolver context.sub/context.scope.
+# Se usa lambda-proxy para conservar statusCode/body, CORS y errores de los handlers.
+# LabRole es el rol externo de las prácticas: sus permisos deben cubrir custom.requiredIamPolicy.
+# Este stack no cambia permisos de LabRole ni despliega los servicios de otros compañeros.
+# Validar: serverless print --stage dev --param="frontendOrigin=..." --param="identityAuthorizerArn=..."
+# Desplegar (solo autorizado): serverless deploy --stage dev con los mismos parámetros.
+org: santiagomorales
+service: rtc-notifications
+frameworkVersion: '>=3.40.0 <5.0.0'
+provider:
+  name: aws
+  runtime: python3.12
+  architecture: x86_64
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+  memorySize: 1024
+  timeout: 30
+  logRetentionInDays: 14
+  iam:
+    role: ${param:lambdaRoleArn, 'arn:aws:iam::369907334103:role/LabRole'}
+  environment:
+    FRONTEND_ORIGIN:
+      Ref: FrontendOrigin
+package:
+  patterns:
+  - '!**'
+  - handlers/*.py
+custom:
+  frontendOrigin: ${param:frontendOrigin, env:FRONTEND_ORIGIN}
+  identityAuthorizerArn: ${param:identityAuthorizerArn, env:IDENTITY_AUTHORIZER_ARN}
+  eventBusName: ${param:eventBusName, 'rtc-events-${sls:stage}'}
+  pythonRequirements:
+    enabled: false
+  requiredIamPolicy:
+    Version: '2012-10-17'
+    Statement:
+    - Effect: Allow
+      Action:
+      - dynamodb:GetItem
+      - dynamodb:PutItem
+      Resource:
+        Fn::GetAtt:
+        - IdempotencyTable
+        - Arn
+    - Effect: Allow
+      Action:
+      - dynamodb:PutItem
+      Resource:
+        Fn::GetAtt:
+        - NotificationsTable
+        - Arn
+    - Effect: Allow
+      Action:
+      - execute-api:Invoke
+      Resource:
+        Ref: IntegrationApiArn
+    - Effect: Allow
+      Action:
+      - dynamodb:Query
+      Resource:
+        Fn::GetAtt:
+        - NotificationsTable
+        - Arn
+    - Effect: Allow
+      Action:
+      - dynamodb:Query
+      Resource:
+        Fn::Sub: ${NotificationsTable.Arn}/index/notification-id
+    - Effect: Allow
+      Action:
+      - dynamodb:GetItem
+      Resource:
+        Fn::GetAtt:
+        - NotificationsTable
+        - Arn
+    - Effect: Allow
+      Action:
+      - dynamodb:UpdateItem
+      Resource:
+        Fn::GetAtt:
+        - NotificationsTable
+        - Arn
+    - Effect: Allow
+      Action:
+      - dynamodb:PutItem
+      Resource:
+        Fn::GetAtt:
+        - PreferencesTable
+        - Arn
+    - Effect: Allow
+      Action:
+      - execute-api:Invoke
+      Resource:
+        Ref: ReportsApiArn
+    - Effect: Allow
+      Action:
+      - sqs:SendMessage
+      Resource:
+        Fn::GetAtt:
+        - StreamFailureQueue
+        - Arn
+    - Effect: Allow
+      Action:
+      - dynamodb:GetItem
+      - dynamodb:UpdateItem
+      Resource:
+        Fn::GetAtt:
+        - NotificationsTable
+        - Arn
+    - Effect: Allow
+      Action:
+      - dynamodb:GetItem
+      Resource:
+        Fn::GetAtt:
+        - PreferencesTable
+        - Arn
+    - Effect: Allow
+      Action:
+      - sqs:SendMessage
+      - sqs:ReceiveMessage
+      - sqs:DeleteMessage
+      - sqs:GetQueueAttributes
+      Resource:
+        Fn::GetAtt:
+        - SendQueue
+        - Arn
+    - Effect: Allow
+      Action:
+      - ses:SendEmail
+      Resource:
+        Fn::Sub: arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:identity/${SesIdentity}
+    - Effect: Allow
+      Action:
+      - sns:Publish
+      Resource: '*'
+      Condition:
+        StringEquals:
+          aws:RequestedRegion:
+            Ref: AWS::Region
+    - Effect: Allow
+      Action:
+      - dynamodb:DescribeStream
+      - dynamodb:GetRecords
+      - dynamodb:GetShardIterator
+      - dynamodb:ListStreams
+      Resource:
+        Fn::GetAtt:
+        - NotificationsTable
+        - StreamArn
+functions:
+  postNotification:
+    name: rtc-notifications-post-notification-${sls:stage}
+    handler: handlers.post_notification.lambda_handler
+    memorySize: 256
+    timeout: 30
+    environment:
+      NOTIFICATIONS_TABLE:
+        Ref: NotificationsTable
+      PREFERENCES_TABLE:
+        Ref: PreferencesTable
+      IDEMPOTENCY_TABLE:
+        Ref: IdempotencyTable
+      IDENTITY_API_URL:
+        Ref: IdentityApiUrl
+      REPORTS_API_URL:
+        Ref: ReportsApiUrl
+      SEND_QUEUE_URL:
+        Ref: SendQueue
+    events:
+    - http:
+        path: v1/notifications
+        method: post
+        integration: lambda-proxy
+        cors:
+          origin: ${self:custom.frontendOrigin}
+          headers:
+          - Content-Type
+          - Authorization
+          - Idempotency-Key
+          allowCredentials: false
+        authorizer:
+          name: identityAuthorizer
+          arn: ${self:custom.identityAuthorizerArn}
+          type: request
+          identitySource: method.request.header.Authorization
+          resultTtlInSeconds: 0
+          managedExternally: true
+  getNotifications:
+    name: rtc-notifications-get-notifications-${sls:stage}
+    handler: handlers.get_notifications.lambda_handler
+    memorySize: 256
+    timeout: 30
+    environment:
+      NOTIFICATIONS_TABLE:
+        Ref: NotificationsTable
+      PREFERENCES_TABLE:
+        Ref: PreferencesTable
+      IDEMPOTENCY_TABLE:
+        Ref: IdempotencyTable
+      IDENTITY_API_URL:
+        Ref: IdentityApiUrl
+      REPORTS_API_URL:
+        Ref: ReportsApiUrl
+      SEND_QUEUE_URL:
+        Ref: SendQueue
+    events:
+    - http:
+        path: v1/notifications
+        method: get
+        integration: lambda-proxy
+        cors:
+          origin: ${self:custom.frontendOrigin}
+          headers:
+          - Content-Type
+          - Authorization
+          - Idempotency-Key
+          allowCredentials: false
+        authorizer:
+          name: identityAuthorizer
+          arn: ${self:custom.identityAuthorizerArn}
+          type: request
+          identitySource: method.request.header.Authorization
+          resultTtlInSeconds: 0
+          managedExternally: true
+  getNotification:
+    name: rtc-notifications-get-notification-${sls:stage}
+    handler: handlers.get_notification.lambda_handler
+    memorySize: 256
+    timeout: 30
+    environment:
+      NOTIFICATIONS_TABLE:
+        Ref: NotificationsTable
+      PREFERENCES_TABLE:
+        Ref: PreferencesTable
+      IDEMPOTENCY_TABLE:
+        Ref: IdempotencyTable
+      IDENTITY_API_URL:
+        Ref: IdentityApiUrl
+      REPORTS_API_URL:
+        Ref: ReportsApiUrl
+      SEND_QUEUE_URL:
+        Ref: SendQueue
+    events:
+    - http:
+        path: v1/notifications/{notificationId}
+        method: get
+        integration: lambda-proxy
+        cors:
+          origin: ${self:custom.frontendOrigin}
+          headers:
+          - Content-Type
+          - Authorization
+          - Idempotency-Key
+          allowCredentials: false
+        authorizer:
+          name: identityAuthorizer
+          arn: ${self:custom.identityAuthorizerArn}
+          type: request
+          identitySource: method.request.header.Authorization
+          resultTtlInSeconds: 0
+          managedExternally: true
+  patchNotificationRead:
+    name: rtc-notifications-patch-notification-read-${sls:stage}
+    handler: handlers.patch_notification_read.lambda_handler
+    memorySize: 256
+    timeout: 30
+    environment:
+      NOTIFICATIONS_TABLE:
+        Ref: NotificationsTable
+      PREFERENCES_TABLE:
+        Ref: PreferencesTable
+      IDEMPOTENCY_TABLE:
+        Ref: IdempotencyTable
+      IDENTITY_API_URL:
+        Ref: IdentityApiUrl
+      REPORTS_API_URL:
+        Ref: ReportsApiUrl
+      SEND_QUEUE_URL:
+        Ref: SendQueue
+    events:
+    - http:
+        path: v1/notifications/{notificationId}/read
+        method: patch
+        integration: lambda-proxy
+        cors:
+          origin: ${self:custom.frontendOrigin}
+          headers:
+          - Content-Type
+          - Authorization
+          - Idempotency-Key
+          allowCredentials: false
+        authorizer:
+          name: identityAuthorizer
+          arn: ${self:custom.identityAuthorizerArn}
+          type: request
+          identitySource: method.request.header.Authorization
+          resultTtlInSeconds: 0
+          managedExternally: true
+  putNotificationPreferences:
+    name: rtc-notifications-put-notification-preferences-${sls:stage}
+    handler: handlers.put_notification_preferences.lambda_handler
+    memorySize: 256
+    timeout: 30
+    environment:
+      NOTIFICATIONS_TABLE:
+        Ref: NotificationsTable
+      PREFERENCES_TABLE:
+        Ref: PreferencesTable
+      IDEMPOTENCY_TABLE:
+        Ref: IdempotencyTable
+      IDENTITY_API_URL:
+        Ref: IdentityApiUrl
+      REPORTS_API_URL:
+        Ref: ReportsApiUrl
+      SEND_QUEUE_URL:
+        Ref: SendQueue
+    events:
+    - http:
+        path: v1/notifications/preferences
+        method: put
+        integration: lambda-proxy
+        cors:
+          origin: ${self:custom.frontendOrigin}
+          headers:
+          - Content-Type
+          - Authorization
+          - Idempotency-Key
+          allowCredentials: false
+        authorizer:
+          name: identityAuthorizer
+          arn: ${self:custom.identityAuthorizerArn}
+          type: request
+          identitySource: method.request.header.Authorization
+          resultTtlInSeconds: 0
+          managedExternally: true
+  consumeIncidentEvents:
+    name: rtc-notifications-consume-incident-events-${sls:stage}
+    handler: handlers.consume_incident_events.lambda_handler
+    memorySize: 256
+    timeout: 300
+    environment:
+      NOTIFICATIONS_TABLE:
+        Ref: NotificationsTable
+      PREFERENCES_TABLE:
+        Ref: PreferencesTable
+      IDEMPOTENCY_TABLE:
+        Ref: IdempotencyTable
+      IDENTITY_API_URL:
+        Ref: IdentityApiUrl
+      REPORTS_API_URL:
+        Ref: ReportsApiUrl
+      SEND_QUEUE_URL:
+        Ref: SendQueue
+  sendNotification:
+    name: rtc-notifications-send-notification-${sls:stage}
+    handler: handlers.send_notification.lambda_handler
+    memorySize: 256
+    timeout: 45
+    environment:
+      NOTIFICATIONS_TABLE:
+        Ref: NotificationsTable
+      PREFERENCES_TABLE:
+        Ref: PreferencesTable
+      IDEMPOTENCY_TABLE:
+        Ref: IdempotencyTable
+      IDENTITY_API_URL:
+        Ref: IdentityApiUrl
+      REPORTS_API_URL:
+        Ref: ReportsApiUrl
+      SEND_QUEUE_URL:
+        Ref: SendQueue
+      DELIVERY_ENABLED:
+        Ref: DeliveryEnabled
+      SES_FROM_ADDRESS:
+        Ref: SesFromAddress
+      SES_CONFIGURATION_SET:
+        Ref: SesConfigurationSet
+    events:
+    - sqs:
+        arn:
+          Fn::GetAtt:
+          - SendQueue
+          - Arn
+        batchSize: 10
+        maximumBatchingWindow: 2
+        functionResponseType: ReportBatchItemFailures
+  processDeliveryStatus:
+    name: rtc-notifications-process-delivery-status-${sls:stage}
+    handler: handlers.process_delivery_status.lambda_handler
+    memorySize: 256
+    timeout: 30
+    environment:
+      NOTIFICATIONS_TABLE:
+        Ref: NotificationsTable
+      PREFERENCES_TABLE:
+        Ref: PreferencesTable
+      IDEMPOTENCY_TABLE:
+        Ref: IdempotencyTable
+      IDENTITY_API_URL:
+        Ref: IdentityApiUrl
+      REPORTS_API_URL:
+        Ref: ReportsApiUrl
+      SEND_QUEUE_URL:
+        Ref: SendQueue
+      DELIVERY_TOPIC_ARN:
+        Ref: DeliveryTopic
+resources:
+  Parameters:
+    FrontendOrigin:
+      Type: String
+      AllowedPattern: https://[^/]+
+      Description: Origen HTTPS exacto del frontend
+      Default: ${self:custom.frontendOrigin}
+    EventBusName:
+      Type: String
+      Default: ${self:custom.eventBusName}
+      Description: Bus compartido existente o creado con shared-template.yaml
+    IntegrationApiArn:
+      Type: String
+      Default: ${param:integrationApiArn, 'arn:aws:execute-api:us-east-1:000000000000:unconfigured/*'}
+      Description: ARN exacto del API externo autorizado; placeholder deliberadamente
+        no operativo
+    IdentityApiUrl:
+      Type: String
+      Default: ${param:identityApiUrl, ''}
+    ReportsApiUrl:
+      Type: String
+      Default: ${param:reportsApiUrl, ''}
+    ReportsApiArn:
+      Type: String
+      Default: ${param:reportsApiArn, 'arn:aws:execute-api:us-east-1:000000000000:unconfigured/*'}
+    DeliveryEnabled:
+      Type: String
+      Default: ${param:deliveryEnabled, 'false'}
+      AllowedValues:
+      - 'true'
+      - 'false'
+    SesFromAddress:
+      Type: String
+      Default: ${param:sesFromAddress, ''}
+    SesIdentity:
+      Type: String
+      Default: ${param:sesIdentity, 'unconfigured.invalid'}
+  Resources:
+    StreamFailureQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName:
+          Fn::Sub: rtc-notifications-stream-failures-${sls:stage}
+        SqsManagedSseEnabled: true
+        MessageRetentionPeriod: 1209600
+        VisibilityTimeout: 360
+    NotificationsTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName:
+          Fn::Sub: rtc-notifications-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        KeySchema:
+        - AttributeName: recipient_id
+          KeyType: HASH
+        - AttributeName: notification_key
+          KeyType: RANGE
+        AttributeDefinitions:
+        - AttributeName: notification_id
+          AttributeType: S
+        - AttributeName: notification_key
+          AttributeType: S
+        - AttributeName: recipient_id
+          AttributeType: S
+        SSESpecification:
+          SSEEnabled: true
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
+        GlobalSecondaryIndexes:
+        - IndexName: notification-id
+          KeySchema:
+          - AttributeName: notification_id
+            KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+    PreferencesTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName:
+          Fn::Sub: rtc-notification-preferences-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+        AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+        SSESpecification:
+          SSEEnabled: true
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
+    IdempotencyTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName:
+          Fn::Sub: rtc-notification-idempotency-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        KeySchema:
+        - AttributeName: idempotency_key
+          KeyType: HASH
+        AttributeDefinitions:
+        - AttributeName: idempotency_key
+          AttributeType: S
+        SSESpecification:
+          SSEEnabled: true
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
+        TimeToLiveSpecification:
+          AttributeName: expires_at
+          Enabled: true
+    SendDlq:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName:
+          Fn::Sub: rtc-notifications-send-dlq-${sls:stage}
+        SqsManagedSseEnabled: true
+        MessageRetentionPeriod: 1209600
+        VisibilityTimeout: 360
+    SendQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName:
+          Fn::Sub: rtc-notifications-send-${sls:stage}
+        SqsManagedSseEnabled: true
+        MessageRetentionPeriod: 1209600
+        VisibilityTimeout: 360
+        RedrivePolicy:
+          deadLetterTargetArn:
+            Fn::GetAtt:
+            - SendDlq
+            - Arn
+          maxReceiveCount: 5
+    DeliveryTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName:
+          Fn::Sub: rtc-notifications-delivery-${sls:stage}
+    DeliveryTopicPolicy:
+      Type: AWS::SNS::TopicPolicy
+      Properties:
+        Topics:
+        - Ref: DeliveryTopic
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Principal:
+              Service: ses.amazonaws.com
+            Action: sns:Publish
+            Resource:
+              Ref: DeliveryTopic
+            Condition:
+              StringEquals:
+                AWS:SourceAccount:
+                  Ref: AWS::AccountId
+              ArnEquals:
+                AWS:SourceArn:
+                  Fn::Sub: arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/${SesConfigurationSet}
+    SesConfigurationSet:
+      Type: AWS::SES::ConfigurationSet
+      Properties:
+        Name:
+          Fn::Sub: rtc-notifications-${sls:stage}
+    SesEvents:
+      Type: AWS::SES::ConfigurationSetEventDestination
+      DependsOn: DeliveryTopicPolicy
+      Properties:
+        ConfigurationSetName:
+          Ref: SesConfigurationSet
+        EventDestination:
+          Name: DeliveryStatus
+          Enabled: true
+          MatchingEventTypes:
+          - delivery
+          - bounce
+          - complaint
+          - reject
+          SnsDestination:
+            TopicARN:
+              Ref: DeliveryTopic
+    PostNotificationErrors:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Errores Lambda; conectar acciones operativas al desplegar
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: PostNotificationLambdaFunction
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    GetNotificationsErrors:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Errores Lambda; conectar acciones operativas al desplegar
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: GetNotificationsLambdaFunction
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    GetNotificationErrors:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Errores Lambda; conectar acciones operativas al desplegar
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: GetNotificationLambdaFunction
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    PatchNotificationReadErrors:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Errores Lambda; conectar acciones operativas al desplegar
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: PatchNotificationReadLambdaFunction
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    PutNotificationPreferencesErrors:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Errores Lambda; conectar acciones operativas al desplegar
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: PutNotificationPreferencesLambdaFunction
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    ConsumeIncidentEventsErrors:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Errores Lambda; conectar acciones operativas al desplegar
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: ConsumeIncidentEventsLambdaFunction
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    IncidentRule:
+      Type: AWS::Events::Rule
+      Properties:
+        Name:
+          Fn::Sub: rtc-notifications-incidentrule-${sls:stage}
+        EventBusName:
+          Ref: EventBusName
+        EventPattern:
+          source:
+          - incident-management
+          detail-type:
+          - incident.collective.detected
+          - incident.status.changed
+          - incident.resolved
+        Targets:
+        - Id: ConsumeIncidentEvents
+          Arn:
+            Fn::GetAtt:
+            - ConsumeIncidentEventsLambdaFunction
+            - Arn
+          RetryPolicy:
+            MaximumRetryAttempts: 10
+            MaximumEventAgeInSeconds: 86400
+          DeadLetterConfig:
+            Arn:
+              Fn::GetAtt:
+              - StreamFailureQueue
+              - Arn
+    IncidentRulePermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        Action: lambda:InvokeFunction
+        FunctionName:
+          Ref: ConsumeIncidentEventsLambdaFunction
+        Principal: events.amazonaws.com
+        SourceArn:
+          Fn::GetAtt:
+          - IncidentRule
+          - Arn
+    EventFailureQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+        - Ref: StreamFailureQueue
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource:
+              Fn::GetAtt:
+              - StreamFailureQueue
+              - Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn:
+                  Fn::GetAtt:
+                  - IncidentRule
+                  - Arn
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource:
+              Fn::GetAtt:
+              - StreamFailureQueue
+              - Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn:
+                  Fn::GetAtt:
+                  - ProviderRule
+                  - Arn
+    ConsumeIncidentEventsAsync:
+      Type: AWS::Lambda::EventInvokeConfig
+      Properties:
+        FunctionName:
+          Ref: ConsumeIncidentEventsLambdaFunction
+        Qualifier: $LATEST
+        MaximumRetryAttempts: 2
+        MaximumEventAgeInSeconds: 21600
+        DestinationConfig:
+          OnFailure:
+            Destination:
+              Fn::GetAtt:
+              - StreamFailureQueue
+              - Arn
+    SendNotificationErrors:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Errores Lambda; conectar acciones operativas al desplegar
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: SendNotificationLambdaFunction
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    ProcessDeliveryStatusErrors:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Errores Lambda; conectar acciones operativas al desplegar
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: ProcessDeliveryStatusLambdaFunction
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    ProviderRule:
+      Type: AWS::Events::Rule
+      Properties:
+        Name:
+          Fn::Sub: rtc-notifications-providerrule-${sls:stage}
+        EventBusName:
+          Ref: EventBusName
+        EventPattern:
+          source:
+          - notification-provider
+          detail-type:
+          - notification.delivery.updated
+        Targets:
+        - Id: ProcessDeliveryStatus
+          Arn:
+            Fn::GetAtt:
+            - ProcessDeliveryStatusLambdaFunction
+            - Arn
+          RetryPolicy:
+            MaximumRetryAttempts: 10
+            MaximumEventAgeInSeconds: 86400
+          DeadLetterConfig:
+            Arn:
+              Fn::GetAtt:
+              - StreamFailureQueue
+              - Arn
+    ProviderRulePermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        Action: lambda:InvokeFunction
+        FunctionName:
+          Ref: ProcessDeliveryStatusLambdaFunction
+        Principal: events.amazonaws.com
+        SourceArn:
+          Fn::GetAtt:
+          - ProviderRule
+          - Arn
+    ProcessDeliveryStatusAsync:
+      Type: AWS::Lambda::EventInvokeConfig
+      Properties:
+        FunctionName:
+          Ref: ProcessDeliveryStatusLambdaFunction
+        Qualifier: $LATEST
+        MaximumRetryAttempts: 2
+        MaximumEventAgeInSeconds: 21600
+        DestinationConfig:
+          OnFailure:
+            Destination:
+              Fn::GetAtt:
+              - StreamFailureQueue
+              - Arn
+    DeliverySubscription:
+      Type: AWS::SNS::Subscription
+      Properties:
+        TopicArn:
+          Ref: DeliveryTopic
+        Protocol: lambda
+        Endpoint:
+          Fn::GetAtt:
+          - ProcessDeliveryStatusLambdaFunction
+          - Arn
+    DeliveryPermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        FunctionName:
+          Ref: ProcessDeliveryStatusLambdaFunction
+        Action: lambda:InvokeFunction
+        Principal: sns.amazonaws.com
+        SourceArn:
+          Ref: DeliveryTopic
+        SourceAccount:
+          Ref: AWS::AccountId
+    StreamFailureQueueAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        Namespace: AWS/SQS
+        MetricName: ApproximateNumberOfMessagesVisible
+        Statistic: Maximum
+        Dimensions:
+        - Name: QueueName
+          Value:
+            Fn::GetAtt:
+            - StreamFailureQueue
+            - QueueName
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    SendDlqAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        Namespace: AWS/SQS
+        MetricName: ApproximateNumberOfMessagesVisible
+        Statistic: Maximum
+        Dimensions:
+        - Name: QueueName
+          Value:
+            Fn::GetAtt:
+            - SendDlq
+            - QueueName
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    SendNotificationNotificationsTableMapping:
+      Type: AWS::Lambda::EventSourceMapping
+      Properties:
+        FunctionName:
+          Ref: SendNotificationLambdaFunction
+        EventSourceArn:
+          Fn::GetAtt:
+          - NotificationsTable
+          - StreamArn
+        StartingPosition: TRIM_HORIZON
+        BatchSize: 100
+        MaximumBatchingWindowInSeconds: 5
+        BisectBatchOnFunctionError: true
+        MaximumRetryAttempts: 10
+        MaximumRecordAgeInSeconds: 82800
+        DestinationConfig:
+          OnFailure:
+            Destination:
+              Fn::GetAtt:
+              - StreamFailureQueue
+              - Arn
+  Outputs:
+    EventBusName:
+      Value:
+        Ref: EventBusName

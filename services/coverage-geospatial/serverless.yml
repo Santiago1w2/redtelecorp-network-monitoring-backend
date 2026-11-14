@@ -1,0 +1,865 @@
+# Solo se necesitan este serverless.yml y los archivos handlers/*.py.
+# Instalar Serverless Framework y usar `serverless` (en PowerShell `sls` es Select-String).
+# Configurar --param="frontendOrigin=https://tu-frontend" y
+# --param="identityAuthorizerArn=<ARN real del authorizer de Identity 01>".
+# Identity debe autorizar API Gateway externamente y devolver context.sub/context.scope.
+# Se usa lambda-proxy para conservar statusCode/body, CORS y errores de los handlers.
+# LabRole es el rol externo de las prácticas: sus permisos deben cubrir custom.requiredIamPolicy.
+# Este stack no cambia permisos de LabRole ni despliega los servicios de otros compañeros.
+# Validar: serverless print --stage dev --param="frontendOrigin=..." --param="identityAuthorizerArn=..."
+# Desplegar (solo autorizado): serverless deploy --stage dev con los mismos parámetros.
+# Antes de package/deploy: python handlers/post_impact_analysis.py --build-package
+# El constructor incluye wheels Linux Python 3.12; requiere uv instalado.
+org: santiagomorales
+service: rtc-coverage-geospatial
+frameworkVersion: '>=3.40.0 <5.0.0'
+provider:
+  name: aws
+  runtime: python3.12
+  architecture: x86_64
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+  memorySize: 1024
+  timeout: 30
+  logRetentionInDays: 14
+  iam:
+    role: ${param:lambdaRoleArn, 'arn:aws:iam::369907334103:role/LabRole'}
+  environment:
+    FRONTEND_ORIGIN:
+      Ref: FrontendOrigin
+package:
+  artifact: .package/coverage-geospatial.zip
+custom:
+  frontendOrigin: ${param:frontendOrigin, env:FRONTEND_ORIGIN}
+  identityAuthorizerArn: ${param:identityAuthorizerArn, env:IDENTITY_AUTHORIZER_ARN}
+  eventBusName: ${param:eventBusName, 'rtc-events-${sls:stage}'}
+  pythonRequirements:
+    enabled: false
+  requiredIamPolicy:
+    Version: '2012-10-17'
+    Statement:
+    - Effect: Allow
+      Action:
+      - dynamodb:Query
+      Resource:
+        Fn::GetAtt:
+        - SpatialIndexTable
+        - Arn
+    - Effect: Allow
+      Action:
+      - dynamodb:GetItem
+      Resource:
+        Fn::GetAtt:
+        - CoverageTable
+        - Arn
+    - Effect: Allow
+      Action:
+      - dynamodb:GetItem
+      Resource:
+        Fn::GetAtt:
+        - ZonesTable
+        - Arn
+    - Effect: Allow
+      Action:
+      - s3:GetObject
+      Resource:
+        Fn::Sub: ${GeospatialBucket.Arn}/geospatial/zones/*
+    - Effect: Allow
+      Action:
+      - dynamodb:GetItem
+      - dynamodb:PutItem
+      Resource:
+        Fn::GetAtt:
+        - CoverageTable
+        - Arn
+    - Effect: Allow
+      Action:
+      - s3:PutObject
+      Resource:
+        Fn::Sub: ${GeospatialBucket.Arn}/geospatial/coverage/*
+    - Effect: Allow
+      Action:
+      - execute-api:Invoke
+      Resource:
+        Ref: IntegrationApiArn
+    - Effect: Allow
+      Action:
+      - dynamodb:PutItem
+      Resource:
+        Fn::GetAtt:
+        - ZonesTable
+        - Arn
+    - Effect: Allow
+      Action:
+      - s3:PutObject
+      Resource:
+        Fn::Sub: ${GeospatialBucket.Arn}/geospatial/zones/*
+    - Effect: Allow
+      Action:
+      - dynamodb:GetItem
+      Resource:
+      - Fn::GetAtt:
+        - CoverageTable
+        - Arn
+      - Fn::GetAtt:
+        - ZonesTable
+        - Arn
+    - Effect: Allow
+      Action:
+      - s3:PutObject
+      Resource:
+        Fn::Sub: ${GeospatialBucket.Arn}/geospatial/analysis/*
+    - Effect: Allow
+      Action:
+      - secretsmanager:GetSecretValue
+      Resource:
+        Fn::If:
+        - OracleConfigured
+        - Ref: OracleSecretArn
+        - Fn::Sub: arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:unconfigured
+    - Effect: Allow
+      Action:
+      - sqs:SendMessage
+      Resource:
+        Fn::GetAtt:
+        - StreamFailureQueue
+        - Arn
+    - Effect: Allow
+      Action:
+      - dynamodb:BatchWriteItem
+      Resource:
+        Fn::GetAtt:
+        - SpatialIndexTable
+        - Arn
+    - Effect: Allow
+      Action:
+      - dynamodb:DescribeStream
+      - dynamodb:GetRecords
+      - dynamodb:GetShardIterator
+      - dynamodb:ListStreams
+      Resource:
+        Fn::GetAtt:
+        - CoverageTable
+        - StreamArn
+    - Effect: Allow
+      Action:
+      - dynamodb:DescribeStream
+      - dynamodb:GetRecords
+      - dynamodb:GetShardIterator
+      - dynamodb:ListStreams
+      Resource:
+        Fn::GetAtt:
+        - ZonesTable
+        - StreamArn
+  pythonPackages:
+  - shapely==2.2.0
+  - pyproj==3.8.0
+  - oracledb==4.0.2
+functions:
+  getCoverageAntennas:
+    name: rtc-coverage-geospatial-get-coverage-antennas-${sls:stage}
+    handler: handlers.get_coverage_antennas.lambda_handler
+    memorySize: 256
+    timeout: 30
+    environment:
+      COVERAGE_TABLE:
+        Ref: CoverageTable
+      ZONES_TABLE:
+        Ref: ZonesTable
+      SPATIAL_INDEX_TABLE:
+        Ref: SpatialIndexTable
+      GEOSPATIAL_BUCKET:
+        Ref: GeospatialBucket
+      INFRASTRUCTURE_API_URL:
+        Ref: InfrastructureApiUrl
+    events:
+    - http:
+        path: v1/coverage/antennas
+        method: get
+        integration: lambda-proxy
+        cors:
+          origin: ${self:custom.frontendOrigin}
+          headers:
+          - Content-Type
+          - Authorization
+          - Idempotency-Key
+          allowCredentials: false
+        authorizer:
+          name: identityAuthorizer
+          arn: ${self:custom.identityAuthorizerArn}
+          type: request
+          identitySource: method.request.header.Authorization
+          resultTtlInSeconds: 0
+          managedExternally: true
+  getZones:
+    name: rtc-coverage-geospatial-get-zones-${sls:stage}
+    handler: handlers.get_zones.lambda_handler
+    memorySize: 256
+    timeout: 30
+    environment:
+      COVERAGE_TABLE:
+        Ref: CoverageTable
+      ZONES_TABLE:
+        Ref: ZonesTable
+      SPATIAL_INDEX_TABLE:
+        Ref: SpatialIndexTable
+      GEOSPATIAL_BUCKET:
+        Ref: GeospatialBucket
+      INFRASTRUCTURE_API_URL:
+        Ref: InfrastructureApiUrl
+    events:
+    - http:
+        path: v1/coverage/zones
+        method: get
+        integration: lambda-proxy
+        cors:
+          origin: ${self:custom.frontendOrigin}
+          headers:
+          - Content-Type
+          - Authorization
+          - Idempotency-Key
+          allowCredentials: false
+        authorizer:
+          name: identityAuthorizer
+          arn: ${self:custom.identityAuthorizerArn}
+          type: request
+          identitySource: method.request.header.Authorization
+          resultTtlInSeconds: 0
+          managedExternally: true
+  getAntennaCoverage:
+    name: rtc-coverage-geospatial-get-antenna-coverage-${sls:stage}
+    handler: handlers.get_antenna_coverage.lambda_handler
+    memorySize: 256
+    timeout: 30
+    environment:
+      COVERAGE_TABLE:
+        Ref: CoverageTable
+      ZONES_TABLE:
+        Ref: ZonesTable
+      SPATIAL_INDEX_TABLE:
+        Ref: SpatialIndexTable
+      GEOSPATIAL_BUCKET:
+        Ref: GeospatialBucket
+      INFRASTRUCTURE_API_URL:
+        Ref: InfrastructureApiUrl
+    events:
+    - http:
+        path: v1/coverage/antennas/{antennaId}
+        method: get
+        integration: lambda-proxy
+        cors:
+          origin: ${self:custom.frontendOrigin}
+          headers:
+          - Content-Type
+          - Authorization
+          - Idempotency-Key
+          allowCredentials: false
+        authorizer:
+          name: identityAuthorizer
+          arn: ${self:custom.identityAuthorizerArn}
+          type: request
+          identitySource: method.request.header.Authorization
+          resultTtlInSeconds: 0
+          managedExternally: true
+  getZone:
+    name: rtc-coverage-geospatial-get-zone-${sls:stage}
+    handler: handlers.get_zone.lambda_handler
+    memorySize: 256
+    timeout: 30
+    environment:
+      COVERAGE_TABLE:
+        Ref: CoverageTable
+      ZONES_TABLE:
+        Ref: ZonesTable
+      SPATIAL_INDEX_TABLE:
+        Ref: SpatialIndexTable
+      GEOSPATIAL_BUCKET:
+        Ref: GeospatialBucket
+      INFRASTRUCTURE_API_URL:
+        Ref: InfrastructureApiUrl
+    events:
+    - http:
+        path: v1/coverage/zones/{zoneId}
+        method: get
+        integration: lambda-proxy
+        cors:
+          origin: ${self:custom.frontendOrigin}
+          headers:
+          - Content-Type
+          - Authorization
+          - Idempotency-Key
+          allowCredentials: false
+        authorizer:
+          name: identityAuthorizer
+          arn: ${self:custom.identityAuthorizerArn}
+          type: request
+          identitySource: method.request.header.Authorization
+          resultTtlInSeconds: 0
+          managedExternally: true
+  putAntennaCoverage:
+    name: rtc-coverage-geospatial-put-antenna-coverage-${sls:stage}
+    handler: handlers.put_antenna_coverage.lambda_handler
+    memorySize: 256
+    timeout: 30
+    environment:
+      COVERAGE_TABLE:
+        Ref: CoverageTable
+      ZONES_TABLE:
+        Ref: ZonesTable
+      SPATIAL_INDEX_TABLE:
+        Ref: SpatialIndexTable
+      GEOSPATIAL_BUCKET:
+        Ref: GeospatialBucket
+      INFRASTRUCTURE_API_URL:
+        Ref: InfrastructureApiUrl
+    events:
+    - http:
+        path: v1/coverage/antennas/{antennaId}
+        method: put
+        integration: lambda-proxy
+        cors:
+          origin: ${self:custom.frontendOrigin}
+          headers:
+          - Content-Type
+          - Authorization
+          - Idempotency-Key
+          allowCredentials: false
+        authorizer:
+          name: identityAuthorizer
+          arn: ${self:custom.identityAuthorizerArn}
+          type: request
+          identitySource: method.request.header.Authorization
+          resultTtlInSeconds: 0
+          managedExternally: true
+  postZone:
+    name: rtc-coverage-geospatial-post-zone-${sls:stage}
+    handler: handlers.post_zone.lambda_handler
+    memorySize: 256
+    timeout: 30
+    environment:
+      COVERAGE_TABLE:
+        Ref: CoverageTable
+      ZONES_TABLE:
+        Ref: ZonesTable
+      SPATIAL_INDEX_TABLE:
+        Ref: SpatialIndexTable
+      GEOSPATIAL_BUCKET:
+        Ref: GeospatialBucket
+      INFRASTRUCTURE_API_URL:
+        Ref: InfrastructureApiUrl
+    events:
+    - http:
+        path: v1/coverage/zones
+        method: post
+        integration: lambda-proxy
+        cors:
+          origin: ${self:custom.frontendOrigin}
+          headers:
+          - Content-Type
+          - Authorization
+          - Idempotency-Key
+          allowCredentials: false
+        authorizer:
+          name: identityAuthorizer
+          arn: ${self:custom.identityAuthorizerArn}
+          type: request
+          identitySource: method.request.header.Authorization
+          resultTtlInSeconds: 0
+          managedExternally: true
+  postImpactAnalysis:
+    name: rtc-coverage-geospatial-post-impact-analysis-${sls:stage}
+    handler: handlers.post_impact_analysis.lambda_handler
+    memorySize: 512
+    timeout: 60
+    environment:
+      COVERAGE_TABLE:
+        Ref: CoverageTable
+      ZONES_TABLE:
+        Ref: ZonesTable
+      SPATIAL_INDEX_TABLE:
+        Ref: SpatialIndexTable
+      GEOSPATIAL_BUCKET:
+        Ref: GeospatialBucket
+      INFRASTRUCTURE_API_URL:
+        Ref: InfrastructureApiUrl
+      ORACLE_ENABLED:
+        Ref: OracleEnabled
+      ORACLE_SECRET_ARN:
+        Ref: OracleSecretArn
+    events:
+    - http:
+        path: v1/coverage/impact-analysis
+        method: post
+        integration: lambda-proxy
+        cors:
+          origin: ${self:custom.frontendOrigin}
+          headers:
+          - Content-Type
+          - Authorization
+          - Idempotency-Key
+          allowCredentials: false
+        authorizer:
+          name: identityAuthorizer
+          arn: ${self:custom.identityAuthorizerArn}
+          type: request
+          identitySource: method.request.header.Authorization
+          resultTtlInSeconds: 0
+          managedExternally: true
+  syncAntennaLocation:
+    name: rtc-coverage-geospatial-sync-antenna-location-${sls:stage}
+    handler: handlers.sync_antenna_location.lambda_handler
+    memorySize: 256
+    timeout: 30
+    environment:
+      COVERAGE_TABLE:
+        Ref: CoverageTable
+      ZONES_TABLE:
+        Ref: ZonesTable
+      SPATIAL_INDEX_TABLE:
+        Ref: SpatialIndexTable
+      GEOSPATIAL_BUCKET:
+        Ref: GeospatialBucket
+      INFRASTRUCTURE_API_URL:
+        Ref: InfrastructureApiUrl
+  refreshGeospatialIndex:
+    name: rtc-coverage-geospatial-refresh-geospatial-index-${sls:stage}
+    handler: handlers.refresh_geospatial_index.lambda_handler
+    memorySize: 256
+    timeout: 30
+    environment:
+      COVERAGE_TABLE:
+        Ref: CoverageTable
+      ZONES_TABLE:
+        Ref: ZonesTable
+      SPATIAL_INDEX_TABLE:
+        Ref: SpatialIndexTable
+      GEOSPATIAL_BUCKET:
+        Ref: GeospatialBucket
+      INFRASTRUCTURE_API_URL:
+        Ref: InfrastructureApiUrl
+resources:
+  Parameters:
+    FrontendOrigin:
+      Type: String
+      AllowedPattern: https://[^/]+
+      Description: Origen HTTPS exacto del frontend
+      Default: ${self:custom.frontendOrigin}
+    EventBusName:
+      Type: String
+      Default: ${self:custom.eventBusName}
+      Description: Bus compartido existente o creado con shared-template.yaml
+    IntegrationApiArn:
+      Type: String
+      Default: ${param:integrationApiArn, 'arn:aws:execute-api:us-east-1:000000000000:unconfigured/*'}
+      Description: ARN exacto del API externo autorizado; placeholder deliberadamente
+        no operativo
+    InfrastructureApiUrl:
+      Type: String
+      Default: ${param:infrastructureApiUrl, ''}
+    OracleEnabled:
+      Type: String
+      Default: ${param:oracleEnabled, 'false'}
+      AllowedValues:
+      - 'true'
+      - 'false'
+    OracleSecretArn:
+      Type: String
+      Default: ${param:oracleSecretArn, ''}
+      Description: Secret con username/password/dsn TCPS reales; no se crea OCI
+  Resources:
+    StreamFailureQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName:
+          Fn::Sub: rtc-coverage-geospatial-stream-failures-${sls:stage}
+        SqsManagedSseEnabled: true
+        MessageRetentionPeriod: 1209600
+        VisibilityTimeout: 360
+    CoverageTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName:
+          Fn::Sub: rtc-coverage-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        KeySchema:
+        - AttributeName: antenna_id
+          KeyType: HASH
+        AttributeDefinitions:
+        - AttributeName: antenna_id
+          AttributeType: S
+        SSESpecification:
+          SSEEnabled: true
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+    ZonesTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName:
+          Fn::Sub: rtc-geozones-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        KeySchema:
+        - AttributeName: zone_id
+          KeyType: HASH
+        AttributeDefinitions:
+        - AttributeName: zone_id
+          AttributeType: S
+        SSESpecification:
+          SSEEnabled: true
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+    SpatialIndexTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName:
+          Fn::Sub: rtc-spatial-index-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        KeySchema:
+        - AttributeName: cell
+          KeyType: HASH
+        - AttributeName: entity_key
+          KeyType: RANGE
+        AttributeDefinitions:
+        - AttributeName: cell
+          AttributeType: S
+        - AttributeName: entity_key
+          AttributeType: S
+        SSESpecification:
+          SSEEnabled: true
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
+    GeospatialBucket:
+      Type: AWS::S3::Bucket
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        BucketName:
+          Fn::Sub: rtc-geospatial-${AWS::AccountId}-${AWS::Region}-${sls:stage}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          IgnorePublicAcls: true
+          BlockPublicPolicy: true
+          RestrictPublicBuckets: true
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+        VersioningConfiguration:
+          Status: Enabled
+        OwnershipControls:
+          Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+    GeospatialBucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket:
+          Ref: GeospatialBucket
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+            - Fn::GetAtt:
+              - GeospatialBucket
+              - Arn
+            - Fn::Sub: ${GeospatialBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+    GetCoverageAntennasErrors:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Errores Lambda; conectar acciones operativas al desplegar
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: GetCoverageAntennasLambdaFunction
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    GetZonesErrors:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Errores Lambda; conectar acciones operativas al desplegar
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: GetZonesLambdaFunction
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    GetAntennaCoverageErrors:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Errores Lambda; conectar acciones operativas al desplegar
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: GetAntennaCoverageLambdaFunction
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    GetZoneErrors:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Errores Lambda; conectar acciones operativas al desplegar
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: GetZoneLambdaFunction
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    PutAntennaCoverageErrors:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Errores Lambda; conectar acciones operativas al desplegar
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: PutAntennaCoverageLambdaFunction
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    PostZoneErrors:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Errores Lambda; conectar acciones operativas al desplegar
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: PostZoneLambdaFunction
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    PostImpactAnalysisErrors:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Errores Lambda; conectar acciones operativas al desplegar
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: PostImpactAnalysisLambdaFunction
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    SyncAntennaLocationErrors:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Errores Lambda; conectar acciones operativas al desplegar
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: SyncAntennaLocationLambdaFunction
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    LocationRule:
+      Type: AWS::Events::Rule
+      Properties:
+        Name:
+          Fn::Sub: rtc-coverage-geospatial-locationrule-${sls:stage}
+        EventBusName:
+          Ref: EventBusName
+        EventPattern:
+          source:
+          - network-infrastructure
+          detail-type:
+          - infrastructure.antenna.location.changed
+        Targets:
+        - Id: SyncAntennaLocation
+          Arn:
+            Fn::GetAtt:
+            - SyncAntennaLocationLambdaFunction
+            - Arn
+          RetryPolicy:
+            MaximumRetryAttempts: 10
+            MaximumEventAgeInSeconds: 86400
+          DeadLetterConfig:
+            Arn:
+              Fn::GetAtt:
+              - StreamFailureQueue
+              - Arn
+    LocationRulePermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        Action: lambda:InvokeFunction
+        FunctionName:
+          Ref: SyncAntennaLocationLambdaFunction
+        Principal: events.amazonaws.com
+        SourceArn:
+          Fn::GetAtt:
+          - LocationRule
+          - Arn
+    EventFailureQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+        - Ref: StreamFailureQueue
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource:
+              Fn::GetAtt:
+              - StreamFailureQueue
+              - Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn:
+                  Fn::GetAtt:
+                  - LocationRule
+                  - Arn
+    SyncAntennaLocationAsync:
+      Type: AWS::Lambda::EventInvokeConfig
+      Properties:
+        FunctionName:
+          Ref: SyncAntennaLocationLambdaFunction
+        Qualifier: $LATEST
+        MaximumRetryAttempts: 2
+        MaximumEventAgeInSeconds: 21600
+        DestinationConfig:
+          OnFailure:
+            Destination:
+              Fn::GetAtt:
+              - StreamFailureQueue
+              - Arn
+    RefreshGeospatialIndexErrors:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Errores Lambda; conectar acciones operativas al desplegar
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: RefreshGeospatialIndexLambdaFunction
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    StreamFailureQueueAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        Namespace: AWS/SQS
+        MetricName: ApproximateNumberOfMessagesVisible
+        Statistic: Maximum
+        Dimensions:
+        - Name: QueueName
+          Value:
+            Fn::GetAtt:
+            - StreamFailureQueue
+            - QueueName
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    RefreshGeospatialIndexCoverageTableMapping:
+      Type: AWS::Lambda::EventSourceMapping
+      Properties:
+        FunctionName:
+          Ref: RefreshGeospatialIndexLambdaFunction
+        EventSourceArn:
+          Fn::GetAtt:
+          - CoverageTable
+          - StreamArn
+        StartingPosition: TRIM_HORIZON
+        BatchSize: 100
+        MaximumBatchingWindowInSeconds: 5
+        BisectBatchOnFunctionError: true
+        MaximumRetryAttempts: 10
+        MaximumRecordAgeInSeconds: 82800
+        DestinationConfig:
+          OnFailure:
+            Destination:
+              Fn::GetAtt:
+              - StreamFailureQueue
+              - Arn
+    RefreshGeospatialIndexZonesTableMapping:
+      Type: AWS::Lambda::EventSourceMapping
+      Properties:
+        FunctionName:
+          Ref: RefreshGeospatialIndexLambdaFunction
+        EventSourceArn:
+          Fn::GetAtt:
+          - ZonesTable
+          - StreamArn
+        StartingPosition: TRIM_HORIZON
+        BatchSize: 100
+        MaximumBatchingWindowInSeconds: 5
+        BisectBatchOnFunctionError: true
+        MaximumRetryAttempts: 10
+        MaximumRecordAgeInSeconds: 82800
+        DestinationConfig:
+          OnFailure:
+            Destination:
+              Fn::GetAtt:
+              - StreamFailureQueue
+              - Arn
+  Outputs:
+    EventBusName:
+      Value:
+        Ref: EventBusName
+  Conditions:
+    OracleConfigured:
+      Fn::Not:
+      - Fn::Equals:
+        - Ref: OracleSecretArn
+        - ''
