@@ -1,0 +1,97 @@
+# Microservicio 7 - Customer Reports / Red TeleCorp
+# Ejecutar desde esta carpeta: serverless deploy --stage dev
+service: redtelecorp-customer-reports
+frameworkVersion: '4'
+
+provider:
+  name: aws
+  region: us-east-1
+  stage: dev
+  runtime: python3.13
+  architecture: x86_64
+  memorySize: 256
+  timeout: 15
+  logRetentionInDays: 7
+  httpApi:
+    name: ${self:service}-${sls:stage}-api
+    cors: true  # MVP: restringir origins y agregar JWT antes de exponer datos reales
+  environment:
+    REPORTS_TABLE: !Ref ReportsTable
+    EVENT_BUS: !Ref ReportsEventBus
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:PutItem
+            - dynamodb:GetItem
+            - dynamodb:UpdateItem
+            - dynamodb:Scan
+            - dynamodb:Query
+          Resource:
+            - !GetAtt ReportsTable.Arn
+            - !Sub '${ReportsTable.Arn}/index/*'
+        - Effect: Allow
+          Action:
+            - events:PutEvents
+          Resource:
+            - !GetAtt ReportsEventBus.Arn
+
+functions:
+  customerReports:
+    name: ${self:service}-${sls:stage}
+    handler: customer_reports.lambda_handler
+    events:
+      - httpApi: { method: POST,  path: /reports }
+      - httpApi: { method: GET,   path: /reports }
+      - httpApi: { method: GET,   path: '/reports/{id}' }
+      - httpApi: { method: GET,   path: '/reports/user/{userId}' }
+      - httpApi: { method: GET,   path: '/reports/zone/{zoneId}' }
+      - httpApi: { method: PATCH, path: '/reports/{id}/status' }
+
+resources:
+  Resources:
+    ReportsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${sls:stage}-data
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: reportId
+            AttributeType: S
+          - AttributeName: userId
+            AttributeType: S
+          - AttributeName: zoneId
+            AttributeType: S
+          - AttributeName: reportedAt
+            AttributeType: S
+        KeySchema:
+          - AttributeName: reportId
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: userId-reportedAt-index
+            KeySchema:
+              - AttributeName: userId
+                KeyType: HASH
+              - AttributeName: reportedAt
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+          - IndexName: zoneId-reportedAt-index
+            KeySchema:
+              - AttributeName: zoneId
+                KeyType: HASH
+              - AttributeName: reportedAt
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+
+    ReportsEventBus:
+      Type: AWS::Events::EventBus
+      Properties:
+        Name: ${self:service}-${sls:stage}-events
+
+  Outputs:
+    ReportsEventBusName:
+      Description: Bus de eventos para integrar Customer Reports con Incident Management
+      Value: !Ref ReportsEventBus
