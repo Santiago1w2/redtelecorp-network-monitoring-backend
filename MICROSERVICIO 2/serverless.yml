@@ -1,0 +1,74 @@
+# Microservicio 2 - Network Infrastructure / Red TeleCorp
+# Desplegar desde esta carpeta: serverless deploy --stage dev
+# Usa recursos propios por entorno; no importa los creados a mano en Learner Lab.
+service: redtelecorp-network-infrastructure
+frameworkVersion: '4'
+
+provider:
+  name: aws
+  region: us-east-1
+  stage: dev
+  runtime: python3.13
+  architecture: x86_64
+  memorySize: 256
+  timeout: 10
+  logRetentionInDays: 7
+  httpApi:
+    name: ${self:service}-${sls:stage}-api
+    cors: true
+  environment:
+    STATIONS_TABLE: !Ref StationsTable
+    ANTENNAS_TABLE: !Ref AntennasTable
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:PutItem
+            - dynamodb:GetItem
+            - dynamodb:UpdateItem
+            - dynamodb:Scan
+          Resource:
+            - !GetAtt StationsTable.Arn
+            - !GetAtt AntennasTable.Arn
+
+functions:
+  networkInfrastructure:
+    name: ${self:service}-${sls:stage}
+    handler: network_infrastructure.lambda_handler
+    events:
+      - httpApi: { method: POST,  path: /stations }
+      - httpApi: { method: GET,   path: /stations }
+      - httpApi: { method: GET,   path: '/stations/{id}' }
+      - httpApi: { method: PATCH, path: '/stations/{id}' }
+      - httpApi: { method: POST,  path: /antennas }
+      - httpApi: { method: GET,   path: /antennas }
+      - httpApi: { method: GET,   path: '/antennas/{id}' }
+      - httpApi: { method: PATCH, path: '/antennas/{id}' }
+      - httpApi: { method: GET,   path: '/stations/{id}/antennas' }
+
+resources:
+  Resources:
+    StationsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${sls:stage}-stations
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: stationId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: stationId
+            KeyType: HASH
+
+    AntennasTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${sls:stage}-antennas
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: antennaId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: antennaId
+            KeyType: HASH
