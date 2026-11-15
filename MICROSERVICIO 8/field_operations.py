@@ -443,6 +443,17 @@ def lambda_handler(event, context):
             result = create_order(event.get('detail') or {})
             return {'handled': True, 'statusCode': result['statusCode']}
 
+        claims = ((event.get('requestContext') or {}).get('authorizer') or {}).get('jwt', {}).get('claims', {})
+        if not claims.get('sub'):
+            return response(401, {'message': 'Autenticacion requerida'})
+        groups = claims.get('cognito:groups', [])
+        if isinstance(groups, str):
+            try:
+                groups = json.loads(groups)
+            except ValueError:
+                groups = groups.strip('[]').split(',')
+        if not isinstance(groups, list) or not set(group.strip() for group in groups if isinstance(group, str)) & {'admin', 'supervisor_red', 'operador_soporte', 'tecnico_campo'}:
+            return response(403, {'message': 'Permiso insuficiente'})
         method = event.get('httpMethod') or (event.get('requestContext') or {}).get('http', {}).get('method')
         path = event.get('rawPath') or event.get('path') or '/'
         segments = [p for p in path.strip('/').split('/') if p]

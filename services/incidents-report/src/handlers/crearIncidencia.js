@@ -1,110 +1,73 @@
-const crypto = require("crypto");
-const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
-const { DynamoDBDocumentClient, PutCommand } = require("@aws-sdk/lib-dynamodb");
-const { SQSClient, SendMessageCommand } = require("@aws-sdk/client-sqs");
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const crypto = require('crypto');
+const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+const { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, DeleteCommand, QueryCommand, TransactWriteCommand } = require('@aws-sdk/lib-dynamodb');
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), { marshallOptions: { removeUndefinedValues: true } });
+const now = () => new Date().toISOString();
+const hash = value => crypto.createHash('sha256').update(value).digest('hex');
+const identifier = value => { if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value)) throw new Error('InvalidIdentifier'); return value; };
+async function get(TableName, Key) { return (await ddb.send(new GetCommand({ TableName, Key, ConsistentRead: true }))).Item; }
+async function reportsInZone(zone) {
+  const items = []; let key;
+  do { const page = await ddb.send(new QueryCommand({ TableName: process.env.REPORTES_TABLE, IndexName: 'ZonaCreatedAtIndex',
+    KeyConditionExpression: 'zona = :z AND createdAt >= :t', ExpressionAttributeValues: { ':z': zone, ':t': new Date(Date.now() - 86400000).toISOString() }, ExclusiveStartKey: key }));
+    items.push(...(page.Items || [])); key = page.LastEvaluatedKey;
+    if (items.length > 10000) throw new Error('ZoneReportLimitExceeded');
+  } while (key); return items;
+}
+async function outbox(type, incident, cause, extra = {}) {
+  const event_id = 'EVT-' + hash(incident.incidenteId + ':' + type + ':' + cause);
+  const envelope = { event_id, event_type: type, source: 'incident-management', occurred_at: now(), version: '1.0',
+    data: { incident_id: incident.incidenteId, zone_id: incident.zona, zone_name: incident.zone_name || incident.zona,
+      incident_status: incident.estado, ...extra } };
+  return { event_id, envelope, report_ids: incident.reporteIds || [], expires_at: Math.floor(Date.now() / 1000) + 2592000 };
+}
+async function putOutbox(item) {
+  try { await ddb.send(new PutCommand({ TableName: process.env.OUTBOX_TABLE, Item: item, ConditionExpression: 'attribute_not_exists(event_id)' })); }
+  catch (error) { if (error.name !== 'ConditionalCheckFailedException') throw error; }
+}
+async function linkRecipients(incident, users) {
+  const unique = [...new Set(users)].filter(Boolean);
+  for (let offset = 0; offset < unique.length; offset += 100) await httpJson(process.env.REPORTS_API_URL,
+    '/v1/reports/incidents/' + encodeURIComponent(incident) + '/recipients', 'PUT', { recipient_ids: unique.slice(offset, offset + 100) });
+}
+async function zoneAntennas(zone) {
+  let cursor; const antennas = [];
+  do { const page = await httpJson(process.env.COVERAGE_API_URL, '/v1/internal/coverage/zones/' + encodeURIComponent(zone) + '/antennas?limit=100' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : ''));
+    antennas.push(...page.antennas); cursor = page.cursor; if (antennas.length > 30) throw new Error('ZoneAntennaLimit30');
+  } while (cursor);
+  for (const antenna of antennas) {
+    try { const latest = await httpJson(process.env.TELEMETRY_API_URL, '/v1/internal/telemetry/antennas/' + encodeURIComponent(antenna.antenna_id) + '/latest');
+      antenna.traffic_gb_min = Number(latest.traffic_gb_min); antenna.status = latest.status; antenna.timestamp = latest.timestamp;
+    } catch (error) { if (error.statusCode !== 404) throw error; antenna.status = 'UNKNOWN'; }
+  }
+  return antennas;
+}
+
+const { SQSClient, SendMessageCommand } = require('@aws-sdk/client-sqs');
 const sqs = new SQSClient({});
-
-exports.handler = async (event) => {
+exports.handler = async event => {
   try {
-    const claims = event.requestContext.authorizer?.claims || {};
-    const userId = claims.sub;
-    const body = JSON.parse(event.body || "{}");
-
-    const {
-      numeroServicio,
-      zona,
-      tipoProblema,
-      descripcion,
-      fechaIncidente,
-      imagen_mime_type,
-      imagen_base64,
-    } = body;
-
-    if (!zona || !descripcion || !numeroServicio) {
-      return {
-        statusCode: 400,
-        headers: { "Access-Control-Allow-Origin": "*" },
-        body: JSON.stringify({
-          message: "Los campos numeroServicio, zona y descripcion son obligatorios",
-        }),
-      };
+    const userId = event.requestContext?.authorizer?.claims?.sub;
+    if (!userId) return { statusCode: 401, body: JSON.stringify({ message: 'Autenticacion requerida' }) };
+    const body = JSON.parse(event.body || '{}');
+    const zone = identifier(body.zone_id || body.zona);
+    const description = body.description || body.descripcion;
+    if (typeof description !== 'string' || !description.trim() || description.length > 1500) throw new Error('InvalidDescription');
+    const idempotency = Object.entries(event.headers || {}).find(([key]) => key.toLowerCase() === 'idempotency-key')?.[1];
+    const reporteId = 'REP-' + (idempotency ? hash(userId + ':' + idempotency).slice(0, 32) : crypto.randomUUID());
+    const createdAt = now();
+    const item = { reporteId, userId, zona: zone, descripcion: description, createdAt, estado: 'REGISTRADA' };
+    try { await ddb.send(new PutCommand({ TableName: process.env.REPORTES_TABLE, Item: item, ConditionExpression: 'attribute_not_exists(reporteId)' })); }
+    catch (error) { if (error.name !== 'ConditionalCheckFailedException') throw error;
+      const existing = await get(process.env.REPORTES_TABLE, { reporteId });
+      if (existing.zona !== zone || existing.descripcion !== description) return { statusCode: 409, body: JSON.stringify({ message: 'Idempotency-Key reutilizada' }) };
     }
-
-    const reporteId = `REP-${crypto.randomUUID()}`;
-    const now = new Date().toISOString();
-
-    const item = {
-      reporteId,
-      userId,
-      emailUsuario: claims.email || null,
-      dniUsuario: claims["custom:dni"] || null,
-      numeroServicio,
-      zona: zona.trim(),
-      tipoProblema: tipoProblema || "GENERAL",
-      descripcion,
-      fechaIncidente: fechaIncidente || now,
-      estado: "REGISTRADA",
-      prioridad: "PENDIENTE_IA",
-      incidenteColectivoId: null,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    // 1. Guardar reporte inicial en DynamoDB
-    await ddb.send(
-      new PutCommand({
-        TableName: process.env.REPORTES_TABLE,
-        Item: item,
-      })
-    );
-
-    // 2. Registrar auditoría inicial
-    await ddb.send(
-      new PutCommand({
-        TableName: process.env.HISTORIAL_TABLE,
-        Item: {
-          entidadId: reporteId,
-          timestamp: now,
-          estadoAnterior: null,
-          estadoNuevo: "REGISTRADA",
-          actorId: userId,
-          comentario: "Reporte registrado por el usuario",
-        },
-      })
-    );
-
-    // 3. Encolar en SQS para procesamiento asíncrono con IA de GCP (incluye imagen si existe)
-    await sqs.send(
-      new SendMessageCommand({
-        QueueUrl: process.env.REPORTES_QUEUE_URL,
-        MessageBody: JSON.stringify({
-          reporteId,
-          userId,
-          zona: item.zona,
-          descripcion,
-          imagen_mime_type: imagen_mime_type || null,
-          imagen_base64: imagen_base64 || null,
-          antenas_estado: body.antenas_estado || [], // Opcional: telemetría enviada en pruebas
-        }),
-      })
-    );
-
-    return {
-      statusCode: 201,
-      headers: { "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({
-        message: "Incidencia registrada y enviada a evaluación inteligente",
-        reporte: item,
-      }),
-    };
+    const envelope = { event_id: reporteId, event_type: 'report.created', source: 'incident-management', occurred_at: createdAt, version: '1.0',
+      data: { report_id: reporteId, user_id: userId, zone_id: zone, description, reported_at: createdAt } };
+    await sqs.send(new SendMessageCommand({ QueueUrl: process.env.INCIDENT_INPUT_QUEUE_URL, MessageBody: JSON.stringify(envelope) }));
+    return { statusCode: 202, body: JSON.stringify({ message: 'Reporte encolado', reporteId }) };
   } catch (error) {
-    console.error("Error registrando incidencia:", error);
-    return {
-      statusCode: 500,
-      headers: { "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({ message: "Error interno", error: error.message }),
-    };
+    return { statusCode: error.name === 'SyntaxError' || error.message.startsWith('Invalid') ? 400 : 503, body: JSON.stringify({ message: 'No se pudo registrar el reporte' }) };
   }
 };

@@ -135,6 +135,15 @@ functions:
     name: rtc-network-telemetry-publish-telemetry-alert-${sls:stage}
     handler: handlers.publish_telemetry_alert.lambda_handler
 
+# APIs internas: autenticacion IAM entre microservicios.
+  getInternalAntennaLatest:
+    handler: handlers.get_internal_antenna_latest.lambda_handler
+    events:
+    - http:
+        path: /v1/internal/telemetry/antennas/{antenna_id}/latest
+        method: get
+        authorizer: aws_iam
+
 # 4. Archivos que se suben a Lambda.
 package:
   patterns:

@@ -22,7 +22,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-API_SECRET_TOKEN = os.environ.get("API_SECRET_TOKEN", "telecorp-secret-2026")
+API_SECRET_TOKEN = os.environ.get("API_SECRET_TOKEN", "")
 GCP_PROJECT = os.environ.get("GCP_PROJECT", "red-telecorp")
 GCP_LOCATION = os.environ.get("GCP_LOCATION", "global")
 MODEL_ID = os.environ.get("MODEL_ID", "gemini-3.5-flash-lite")
@@ -50,6 +50,8 @@ class ChatRequest(BaseModel):
 
 
 def verificar_token(x_api_key: str = Header(None)):
+    if not API_SECRET_TOKEN:
+        raise HTTPException(status_code=503, detail="Integracion IA sin configurar")
     if x_api_key != API_SECRET_TOKEN:
         raise HTTPException(status_code=401, detail="No autorizado")
 

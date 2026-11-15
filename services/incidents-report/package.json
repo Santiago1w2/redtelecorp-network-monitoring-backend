@@ -6,6 +6,16 @@
     "@aws-sdk/client-dynamodb": "^3.700.0",
     "@aws-sdk/client-sfn": "^3.700.0",
     "@aws-sdk/client-sqs": "^3.700.0",
-    "@aws-sdk/lib-dynamodb": "^3.700.0"
+    "@aws-sdk/lib-dynamodb": "^3.700.0",
+    "@aws-sdk/client-eventbridge": "^3.700.0",
+    "@aws-sdk/client-secrets-manager": "^3.700.0",
+    "@aws-sdk/util-dynamodb": "^3.700.0",
+    "@aws-sdk/credential-provider-node": "^3.700.0",
+    "@smithy/signature-v4": "^5.0.0",
+    "@smithy/protocol-http": "^5.0.0",
+    "@aws-crypto/sha256-js": "^5.2.0"
+  },
+  "devDependencies": {
+    "serverless-step-functions": "3.31.2"
   }
 }

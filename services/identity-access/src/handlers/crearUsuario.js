@@ -21,7 +21,9 @@ const ROLES_VALIDOS = [
 exports.handler = async (event) => {
   try {
     const claims = event.requestContext.authorizer?.claims || {};
-    const gruposCaller = claims["cognito:groups"] || "";
+    let gruposCaller = claims['cognito:groups'] || [];
+    if (typeof gruposCaller === 'string') { try { gruposCaller = JSON.parse(gruposCaller); } catch (_) { gruposCaller = gruposCaller.replace(/^\[|\]$/g, '').split(','); } }
+    gruposCaller = Array.isArray(gruposCaller) ? gruposCaller.map(group => typeof group === 'string' ? group.trim() : '') : [];
 
     if (!gruposCaller.includes("admin")) {
       return {

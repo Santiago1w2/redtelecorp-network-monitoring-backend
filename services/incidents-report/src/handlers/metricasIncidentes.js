@@ -3,8 +3,13 @@ const { DynamoDBDocumentClient, ScanCommand } = require("@aws-sdk/lib-dynamodb")
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
-exports.handler = async () => {
+exports.handler = async (event) => {
   try {
+    const claims = event.requestContext?.authorizer?.claims || {};
+    let grupos = claims['cognito:groups'] || [];
+    if (typeof grupos === 'string') { try { grupos = JSON.parse(grupos); } catch (_) { grupos = grupos.replace(/^\[|\]$/g, '').split(','); } }
+    const staff = Array.isArray(grupos) && grupos.some(group => ['admin', 'supervisor_red', 'operador_soporte', 'tecnico_campo'].includes(group.trim()));
+    if (!staff) return { statusCode: 403, body: '{}' };
     const [reportesRes, colectivosRes] = await Promise.all([
       ddb.send(new ScanCommand({ TableName: process.env.REPORTES_TABLE })),
       ddb.send(new ScanCommand({ TableName: process.env.INCIDENTES_TABLE })),
@@ -32,15 +37,15 @@ exports.handler = async () => {
         totalResueltos++;
       }
       for (const ant of inc.antenasAfectadas || []) {
-        if (ant.estado !== "OPERATIVA") {
-          antenasFallas[ant.antena_id] = (antenasFallas[ant.antena_id] || 0) + 1;
+        if (["DOWN", "DISABLED", "SATURATED"].includes(ant.status)) {
+          antenasFallas[ant.antenna_id] = (antenasFallas[ant.antenna_id] || 0) + 1;
         }
       }
     }
 
     return {
       statusCode: 200,
-      headers: { "Access-Control-Allow-Origin": "*" },
+      headers: { "Access-Control-Allow-Origin": process.env.FRONTEND_ORIGIN },
       body: JSON.stringify({
         totalReportes: reportes.length,
         totalIncidentesColectivos: colectivos.length,
@@ -52,10 +57,10 @@ exports.handler = async () => {
       }),
     };
   } catch (error) {
-    console.error("Error calculando métricas:", error);
+    console.error("Error calculando mÃ©tricas:", error);
     return {
       statusCode: 500,
-      headers: { "Access-Control-Allow-Origin": "*" },
+      headers: { "Access-Control-Allow-Origin": process.env.FRONTEND_ORIGIN },
       body: JSON.stringify({ message: "Error interno", error: error.message }),
     };
   }

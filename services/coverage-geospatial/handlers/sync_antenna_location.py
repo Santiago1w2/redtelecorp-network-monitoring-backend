@@ -116,6 +116,8 @@ def save_coverage(antenna, data, location_version=None):
     key = f'geospatial/coverage/{antenna}/{hashlib.sha256(content).hexdigest()}.geojson'
     s3.put_object(Bucket=BUCKET, Key=key, Body=content, ContentType='application/geo+json', ServerSideEncryption='AES256')
     item = {'antenna_id': antenna, 'latitude': latitude, 'longitude': longitude, 'coverage_radius_m': radius, 'coverage_model': 'ESTIMATED_CIRCLE', 'zone_id': zone, 'geohash': geohash(latitude, longitude), 'geometry_s3_key': key, 'updated_at': now(), 'index_cells': cells([float(longitude), float(latitude), float(longitude), float(latitude)])}
+    if not zone:
+        item.pop('zone_id', None)
     if location_version:
         item['location_version'] = location_version
         table.put_item(Item=decimalize(item), ConditionExpression='attribute_not_exists(location_version) OR location_version < :v', ExpressionAttributeValues={':v': location_version})

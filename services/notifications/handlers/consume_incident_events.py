@@ -68,11 +68,10 @@ def external_json(base_url, route, method='GET', payload=None):
         raise ConnectionError('La integración requiere HTTPS')
     data = dumps(payload).encode() if payload is not None else None
     headers = {'Content-Type': 'application/json'}
-    if not os.environ.get('LOCAL_TEST') == 'true':
-        credentials = boto3.Session().get_credentials().get_frozen_credentials()
-        signed = AWSRequest(method=method, url=url, data=data, headers=headers)
-        SigV4Auth(credentials, 'execute-api', os.environ.get('AWS_REGION', 'us-east-1')).add_auth(signed)
-        headers = dict(signed.headers.items())
+    credentials = boto3.Session().get_credentials().get_frozen_credentials()
+    signed = AWSRequest(method=method, url=url, data=data, headers=headers)
+    SigV4Auth(credentials, 'execute-api', os.environ.get('AWS_REGION', 'us-east-1')).add_auth(signed)
+    headers = dict(signed.headers.items())
     try:
         with request.urlopen(request.Request(url, data=data, headers=headers, method=method), timeout=5) as result:
             return json.loads(result.read(1000000), parse_float=Decimal)
@@ -147,6 +146,12 @@ def lambda_handler(event, context):
             raise ConnectionError('Contrato de destinatarios inválido')
         for user in recipients:
             identifier(user)
+            targeted = data.get('recipient_ids')
+            if targeted is not None:
+                if not isinstance(targeted, list) or len(targeted) > 100 or any(not isinstance(value, str) for value in targeted):
+                    raise ValueError('Destinatarios dirigidos invalidos')
+                if user not in targeted:
+                    continue
             notification_id = create_notification({'recipient_id': user, 'incident_id': incident, 'template': TYPES[detail['event_type']], 'channels': ['EMAIL', 'SMS', 'IN_APP'], 'variables': {'zone_name': data['zone_name'], 'incident_status': data['incident_status']}}, 'event:' + detail['event_id'] + ':' + user, detail['occurred_at'])
             if notification_id is None:
                 raise ValueError('Evento repetido con contenido diferente')

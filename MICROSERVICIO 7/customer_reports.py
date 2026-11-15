@@ -314,7 +314,36 @@ def lambda_handler(event, context):
     parts = [piece for piece in path.strip("/").split("/") if piece]
 
     try:
+        # API Gateway HTTP API verifica Cognito; no se confía en userId del body.
+        claims = ((event.get('requestContext') or {}).get('authorizer') or {}).get('jwt', {}).get('claims', {})
+        user = claims.get('sub')
+        if not user:
+            return response(401, {'message': 'Autenticacion requerida'})
+        groups = claims.get('cognito:groups', [])
+        if isinstance(groups, str):
+            try:
+                groups = json.loads(groups)
+            except ValueError:
+                groups = groups.strip('[]').split(',')
+        staff = isinstance(groups, list) and bool(set(group.strip() for group in groups if isinstance(group, str)) & {'admin', 'supervisor_red', 'operador_soporte', 'tecnico_campo'})
         table = get_table()
+        if method == 'POST':
+            data = read_json(event)
+            if data.get('userId', user) != user:
+                return response(403, {'message': 'No se puede reportar como otro usuario'})
+            data['userId'] = user
+            event = dict(event, body=json.dumps(data), isBase64Encoded=False)
+        elif method == 'PATCH' and not staff:
+            return response(403, {'message': 'Permiso insuficiente'})
+        elif method == 'GET' and not staff:
+            if len(parts) == 3 and parts[:2] == ['reports', 'user']:
+                if parts[2] != user:
+                    return response(403, {'message': 'Permiso insuficiente'})
+            elif len(parts) == 2 and parts[0] == 'reports':
+                if get_report(table, parts[1]).get('userId') != user:
+                    return response(404, {'message': 'Reporte no encontrado'})
+            else:
+                return response(403, {'message': 'Permiso insuficiente'})
         if method == "POST" and parts == ["reports"]:
             return create_report(table, event)
         if method == "GET" and parts == ["reports"]:

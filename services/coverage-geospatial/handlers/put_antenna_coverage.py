@@ -56,11 +56,10 @@ def external_json(base_url, route, method='GET', payload=None):
         raise ConnectionError('La integración requiere HTTPS')
     data = dumps(payload).encode() if payload is not None else None
     headers = {'Content-Type': 'application/json'}
-    if not os.environ.get('LOCAL_TEST') == 'true':
-        credentials = boto3.Session().get_credentials().get_frozen_credentials()
-        signed = AWSRequest(method=method, url=url, data=data, headers=headers)
-        SigV4Auth(credentials, 'execute-api', os.environ.get('AWS_REGION', 'us-east-1')).add_auth(signed)
-        headers = dict(signed.headers.items())
+    credentials = boto3.Session().get_credentials().get_frozen_credentials()
+    signed = AWSRequest(method=method, url=url, data=data, headers=headers)
+    SigV4Auth(credentials, 'execute-api', os.environ.get('AWS_REGION', 'us-east-1')).add_auth(signed)
+    headers = dict(signed.headers.items())
     try:
         with request.urlopen(request.Request(url, data=data, headers=headers, method=method), timeout=5) as result:
             return json.loads(result.read(1000000), parse_float=Decimal)
@@ -132,6 +131,8 @@ def save_coverage(antenna, data, location_version=None):
     key = f'geospatial/coverage/{antenna}/{hashlib.sha256(content).hexdigest()}.geojson'
     s3.put_object(Bucket=BUCKET, Key=key, Body=content, ContentType='application/geo+json', ServerSideEncryption='AES256')
     item = {'antenna_id': antenna, 'latitude': latitude, 'longitude': longitude, 'coverage_radius_m': radius, 'coverage_model': 'ESTIMATED_CIRCLE', 'zone_id': zone, 'geohash': geohash(latitude, longitude), 'geometry_s3_key': key, 'updated_at': now(), 'index_cells': cells([float(longitude), float(latitude), float(longitude), float(latitude)])}
+    if not zone:
+        item.pop('zone_id', None)
     if location_version:
         item['location_version'] = location_version
         table.put_item(Item=decimalize(item), ConditionExpression='attribute_not_exists(location_version) OR location_version < :v', ExpressionAttributeValues={':v': location_version})

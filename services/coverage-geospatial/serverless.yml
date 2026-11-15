@@ -138,6 +138,31 @@ functions:
     name: rtc-coverage-geospatial-refresh-geospatial-index-${sls:stage}
     handler: handlers.refresh_geospatial_index.lambda_handler
 
+# APIs internas: autenticacion IAM entre microservicios.
+  getInternalAntennaCoverage:
+    handler: handlers.get_internal_antenna_coverage.lambda_handler
+    events:
+    - http:
+        path: /v1/internal/coverage/antennas/{antenna_id}
+        method: get
+        authorizer: aws_iam
+  getZoneAntennas:
+    handler: handlers.get_zone_antennas.lambda_handler
+    events:
+    - http:
+        path: /v1/internal/coverage/zones/{zone_id}/antennas
+        method: get
+        authorizer: aws_iam
+  postInternalImpactAnalysis:
+    handler: handlers.post_internal_impact_analysis.lambda_handler
+    timeout: 60
+    memorySize: 512
+    events:
+    - http:
+        path: /v1/internal/coverage/impact-analysis
+        method: post
+        authorizer: aws_iam
+
 # 4. Archivos que se suben a Lambda.
 package:
   artifact: .package/coverage-geospatial.zip
@@ -157,6 +182,8 @@ resources:
         AttributeDefinitions:
           - AttributeName: antenna_id
             AttributeType: S
+          - AttributeName: zone_id
+            AttributeType: S
         KeySchema:
           - AttributeName: antenna_id
             KeyType: HASH
@@ -167,6 +194,14 @@ resources:
           PointInTimeRecoveryEnabled: true
         StreamSpecification:
           StreamViewType: NEW_AND_OLD_IMAGES
+
+        GlobalSecondaryIndexes:
+          - IndexName: zone_id-index
+            KeySchema:
+              - AttributeName: zone_id
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
 
     # Tabla DynamoDB: ZonesTable.
     ZonesTable:

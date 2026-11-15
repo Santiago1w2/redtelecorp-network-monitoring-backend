@@ -1,115 +1,66 @@
-const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
-const {
-  DynamoDBDocumentClient,
-  GetCommand,
-  UpdateCommand,
-  PutCommand,
-} = require("@aws-sdk/lib-dynamodb");
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-
-const ESTADOS_VALIDOS = [
-  "REGISTRADA",
-  "EN_REVISION",
-  "SIENDO_ATENDIDA",
-  "SOLUCIONADA",
-  "CERRADA",
-];
-
-exports.handler = async (event) => {
-  try {
-    const claims = event.requestContext.authorizer?.claims || {};
-    const grupos = claims["cognito:groups"] || "";
-
-    const rolesPermitidos = ["admin", "supervisor_red", "operador_soporte", "tecnico_campo"];
-    const tienePermiso = rolesPermitidos.some((r) => grupos.includes(r));
-
-    if (!tienePermiso) {
-      return {
-        statusCode: 403,
-        headers: { "Access-Control-Allow-Origin": "*" },
-        body: JSON.stringify({ message: "No tiene permisos para actualizar estados" }),
-      };
-    }
-
-    const id = event.pathParameters?.id;
-    const { nuevoEstado, comentario } = JSON.parse(event.body || "{}");
-
-    if (!ESTADOS_VALIDOS.includes(nuevoEstado)) {
-      return {
-        statusCode: 400,
-        headers: { "Access-Control-Allow-Origin": "*" },
-        body: JSON.stringify({ message: "Estado inválido", estadosPermitidos: ESTADOS_VALIDOS }),
-      };
-    }
-
-    const esColectivo = id.startsWith("INC-");
-    const tabla = esColectivo ? process.env.INCIDENTES_TABLE : process.env.REPORTES_TABLE;
-    const key = esColectivo ? { incidenteId: id } : { reporteId: id };
-
-    const actual = await ddb.send(new GetCommand({ TableName: tabla, Key: key }));
-    if (!actual.Item) {
-      return {
-        statusCode: 404,
-        headers: { "Access-Control-Allow-Origin": "*" },
-        body: JSON.stringify({ message: "Registro no encontrado" }),
-      };
-    }
-
-    const now = new Date().toISOString();
-    let extraUpdate = "";
-    const exprValues = {
-      ":est": nuevoEstado,
-      ":now": now,
-    };
-
-    // Calcular tiempo de resolución si pasa a SOLUCIONADA
-    if (nuevoEstado === "SOLUCIONADA" && actual.Item.createdAt) {
-      const minutos = Math.round(
-        (new Date(now) - new Date(actual.Item.createdAt)) / 60000
-      );
-      extraUpdate = ", tiempoResolucionMinutos = :min, resolvedAt = :now";
-      exprValues[":min"] = minutos;
-    }
-
-    await ddb.send(
-      new UpdateCommand({
-        TableName: tabla,
-        Key: key,
-        UpdateExpression: `set estado = :est, updatedAt = :now${extraUpdate}`,
-        ExpressionAttributeValues: exprValues,
-      })
-    );
-
-    await ddb.send(
-      new PutCommand({
-        TableName: process.env.HISTORIAL_TABLE,
-        Item: {
-          entidadId: id,
-          timestamp: now,
-          estadoAnterior: actual.Item.estado,
-          estadoNuevo: nuevoEstado,
-          actorId: claims.email || claims.sub,
-          comentario: comentario || `Estado actualizado a ${nuevoEstado}`,
-        },
-      })
-    );
-
-    return {
-      statusCode: 200,
-      headers: { "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({
-        message: `Estado actualizado a ${nuevoEstado}`,
-        id,
-        estado: nuevoEstado,
-      }),
-    };
-  } catch (error) {
-    console.error("Error actualizando estado:", error);
-    return {
-      statusCode: 500,
-      headers: { "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({ message: "Error interno", error: error.message }),
-    };
+const crypto = require('crypto');
+const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+const { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, DeleteCommand, QueryCommand, TransactWriteCommand } = require('@aws-sdk/lib-dynamodb');
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), { marshallOptions: { removeUndefinedValues: true } });
+const now = () => new Date().toISOString();
+const hash = value => crypto.createHash('sha256').update(value).digest('hex');
+const identifier = value => { if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value)) throw new Error('InvalidIdentifier'); return value; };
+async function get(TableName, Key) { return (await ddb.send(new GetCommand({ TableName, Key, ConsistentRead: true }))).Item; }
+async function reportsInZone(zone) {
+  const items = []; let key;
+  do { const page = await ddb.send(new QueryCommand({ TableName: process.env.REPORTES_TABLE, IndexName: 'ZonaCreatedAtIndex',
+    KeyConditionExpression: 'zona = :z AND createdAt >= :t', ExpressionAttributeValues: { ':z': zone, ':t': new Date(Date.now() - 86400000).toISOString() }, ExclusiveStartKey: key }));
+    items.push(...(page.Items || [])); key = page.LastEvaluatedKey;
+    if (items.length > 10000) throw new Error('ZoneReportLimitExceeded');
+  } while (key); return items;
+}
+async function outbox(type, incident, cause, extra = {}) {
+  const event_id = 'EVT-' + hash(incident.incidenteId + ':' + type + ':' + cause);
+  const envelope = { event_id, event_type: type, source: 'incident-management', occurred_at: now(), version: '1.0',
+    data: { incident_id: incident.incidenteId, zone_id: incident.zona, zone_name: incident.zone_name || incident.zona,
+      incident_status: incident.estado, ...extra } };
+  return { event_id, envelope, report_ids: incident.reporteIds || [], expires_at: Math.floor(Date.now() / 1000) + 2592000 };
+}
+async function putOutbox(item) {
+  try { await ddb.send(new PutCommand({ TableName: process.env.OUTBOX_TABLE, Item: item, ConditionExpression: 'attribute_not_exists(event_id)' })); }
+  catch (error) { if (error.name !== 'ConditionalCheckFailedException') throw error; }
+}
+async function linkRecipients(incident, users) {
+  const unique = [...new Set(users)].filter(Boolean);
+  for (let offset = 0; offset < unique.length; offset += 100) await httpJson(process.env.REPORTS_API_URL,
+    '/v1/reports/incidents/' + encodeURIComponent(incident) + '/recipients', 'PUT', { recipient_ids: unique.slice(offset, offset + 100) });
+}
+async function zoneAntennas(zone) {
+  let cursor; const antennas = [];
+  do { const page = await httpJson(process.env.COVERAGE_API_URL, '/v1/internal/coverage/zones/' + encodeURIComponent(zone) + '/antennas?limit=100' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : ''));
+    antennas.push(...page.antennas); cursor = page.cursor; if (antennas.length > 30) throw new Error('ZoneAntennaLimit30');
+  } while (cursor);
+  for (const antenna of antennas) {
+    try { const latest = await httpJson(process.env.TELEMETRY_API_URL, '/v1/internal/telemetry/antennas/' + encodeURIComponent(antenna.antenna_id) + '/latest');
+      antenna.traffic_gb_min = Number(latest.traffic_gb_min); antenna.status = latest.status; antenna.timestamp = latest.timestamp;
+    } catch (error) { if (error.statusCode !== 404) throw error; antenna.status = 'UNKNOWN'; }
   }
+  return antennas;
+}
+
+const { SQSClient, SendMessageCommand } = require('@aws-sdk/client-sqs');
+const sqs = new SQSClient({});
+exports.handler = async event => {
+  try {
+    const claims = event.requestContext?.authorizer?.claims || {};
+    if (!claims.sub) return { statusCode: 401, body: '{}' };
+    let groups = claims['cognito:groups'] || [];
+    if (typeof groups === 'string') { try { groups = JSON.parse(groups); } catch (_) { groups = groups.replace(/^\[|\]$/g, '').split(','); } }
+    if (!Array.isArray(groups) || !groups.some(group => ['admin', 'supervisor_red', 'operador_soporte', 'tecnico_campo'].includes(group.trim()))) return { statusCode: 403, body: '{}' };
+    const id = identifier(event.pathParameters?.id);
+    const body = JSON.parse(event.body || '{}');
+    const status = body.nuevoEstado || body.status;
+    if (!['EN_REVISION', 'EN_ATENCION', 'SIENDO_ATENDIDA', 'SOLUCIONADA'].includes(status)) return { statusCode: 400, body: JSON.stringify({ message: 'Estado no permitido' }) };
+    if (!await get(process.env.INCIDENTES_TABLE, { incidenteId: id })) return { statusCode: 404, body: '{}' };
+    const envelope = { event_id: 'STATUS-' + hash(id + ':' + status + ':' + (event.requestContext.requestId || crypto.randomUUID())),
+      event_type: 'incident.status.requested', source: 'incident-management', occurred_at: now(), version: '1.0', data: { incident_id: id, status } };
+    await sqs.send(new SendMessageCommand({ QueueUrl: process.env.INCIDENT_INPUT_QUEUE_URL, MessageBody: JSON.stringify(envelope) }));
+    return { statusCode: 202, body: JSON.stringify({ message: 'Transicion encolada; resolucion sujeta a recuperacion verificada', incident_id: id }) };
+  } catch (error) { return { statusCode: error.name === 'SyntaxError' || error.message === 'InvalidIdentifier' ? 400 : 503, body: '{}' }; }
 };
