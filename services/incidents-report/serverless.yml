@@ -1,0 +1,246 @@
+service: telecorp-incidents-service
+
+plugins:
+  - serverless-step-functions
+
+provider:
+  name: aws
+  runtime: nodejs22.x
+  region: us-east-1
+  stage: ${opt:stage, 'dev'}
+  environment:
+    REPORTES_TABLE: ${self:service}-reportes-${self:provider.stage}
+    INCIDENTES_TABLE: ${self:service}-colectivos-${self:provider.stage}
+    HISTORIAL_TABLE: ${self:service}-historial-${self:provider.stage}
+    REPORTES_QUEUE_URL: !Ref ReportesQueue
+    GCP_AI_BASE_URL: ${ssm:/telecorp/${self:provider.stage}/gcp/ai-base-url}
+  iam:
+    role: arn:aws:iam::246946388956:role/LabRole
+
+functions:
+  # 1. API Endpoints
+  crearIncidencia:
+    handler: src/handlers/crearIncidencia.handler
+    events:
+      - http:
+          path: incidencias
+          method: post
+          cors: true
+          authorizer:
+            name: TeleCorpAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: ${ssm:/telecorp/${self:provider.stage}/cognito/user-pool-arn}
+
+  listarIncidencias:
+    handler: src/handlers/listarIncidencias.handler
+    events:
+      - http:
+          path: incidencias
+          method: get
+          cors: true
+          authorizer:
+            name: TeleCorpAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: ${ssm:/telecorp/${self:provider.stage}/cognito/user-pool-arn}
+
+  obtenerDetalleIncidencia:
+    handler: src/handlers/obtenerDetalleIncidencia.handler
+    events:
+      - http:
+          path: incidencias/{id}
+          method: get
+          cors: true
+          authorizer:
+            name: TeleCorpAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: ${ssm:/telecorp/${self:provider.stage}/cognito/user-pool-arn}
+
+  actualizarEstadoIncidencia:
+    handler: src/handlers/actualizarEstadoIncidencia.handler
+    events:
+      - http:
+          path: incidencias/{id}/estado
+          method: patch
+          cors: true
+          authorizer:
+            name: TeleCorpAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: ${ssm:/telecorp/${self:provider.stage}/cognito/user-pool-arn}
+
+  metricasIncidentes:
+    handler: src/handlers/metricasIncidentes.handler
+    events:
+      - http:
+          path: incidencias/metricas
+          method: get
+          cors: true
+          authorizer:
+            name: TeleCorpAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: ${ssm:/telecorp/${self:provider.stage}/cognito/user-pool-arn}
+
+  # 2. Worker SQS (Llama a IA Individual GCP y evalúa regla 10+ usuarios / 24h)
+  procesarReporteWorker:
+    handler: src/handlers/procesarReporteWorker.handler
+    timeout: 30
+    environment:
+      STATE_MACHINE_ARN: arn:aws:states:${self:provider.region}:${aws:accountId}:stateMachine:OrquestadorIncidentesTeleCorp-${self:provider.stage}
+    events:
+      - sqs:
+          arn: !GetAtt ReportesQueue.Arn
+          batchSize: 5
+
+  # 3. Funciones internas de AWS Step Functions
+  sfConsolidarZona:
+    handler: src/handlers/stepFunctions/consolidarZona.handler
+
+  sfDiagnosticarIAGrupal:
+    handler: src/handlers/stepFunctions/diagnosticarIAGrupal.handler
+    timeout: 30
+
+  sfGuardarIncidenteColectivo:
+    handler: src/handlers/stepFunctions/guardarIncidenteColectivo.handler
+
+  sfDespacharCuadrillaYNotificar:
+    handler: src/handlers/stepFunctions/despacharCuadrillaYNotificar.handler
+
+stepFunctions:
+  stateMachines:
+    OrquestadorIncidentesStateMachine:
+      name: OrquestadorIncidentesTeleCorp-${self:provider.stage}
+      role: arn:aws:iam::246946388956:role/LabRole
+      definition:
+        Comment: Orquestacion de incidentes colectivos, diagnostico IA GCP y despacho de cuadrillas
+        StartAt: ConsolidarZonaYAntenas
+        States:
+          ConsolidarZonaYAntenas:
+            Type: Task
+            Resource: !GetAtt sfConsolidarZona.Arn
+            Next: DiagnosticarConIAGrupal
+
+          DiagnosticarConIAGrupal:
+            Type: Task
+            Resource: !GetAtt sfDiagnosticarIAGrupal.Arn
+            Retry:
+              - ErrorEquals: ["States.TaskFailed"]
+                IntervalSeconds: 2
+                MaxAttempts: 2
+                BackoffRate: 2.0
+            Next: GuardarIncidenteColectivo
+
+          GuardarIncidenteColectivo:
+            Type: Task
+            Resource: !GetAtt sfGuardarIncidenteColectivo.Arn
+            Next: EvaluarDespachoCuadrilla
+
+          EvaluarDespachoCuadrilla:
+            Type: Choice
+            Choices:
+              - Variable: "$.diagnosticoIA.requiere_cuadrilla_campo"
+                BooleanEquals: true
+                Next: DespacharCuadrillaYNotificar
+              - Variable: "$.diagnosticoIA.riesgo_estructural"
+                StringEquals: "ALTO"
+                Next: DespacharCuadrillaYNotificar
+            Default: FinalizarOrquestacion
+
+          DespacharCuadrillaYNotificar:
+            Type: Task
+            Resource: !GetAtt sfDespacharCuadrillaYNotificar.Arn
+            End: true
+
+          FinalizarOrquestacion:
+            Type: Succeed
+
+resources:
+  Resources:
+    ReportesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.REPORTES_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: reporteId
+            AttributeType: S
+          - AttributeName: zona
+            AttributeType: S
+          - AttributeName: createdAt
+            AttributeType: S
+          - AttributeName: userId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: reporteId
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: ZonaCreatedAtIndex
+            KeySchema:
+              - AttributeName: zona
+                KeyType: HASH
+              - AttributeName: createdAt
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+          - IndexName: UserCreatedAtIndex
+            KeySchema:
+              - AttributeName: userId
+                KeyType: HASH
+              - AttributeName: createdAt
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+
+    IncidentesColectivosTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.INCIDENTES_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: incidenteId
+            AttributeType: S
+          - AttributeName: zona
+            AttributeType: S
+          - AttributeName: createdAt
+            AttributeType: S
+        KeySchema:
+          - AttributeName: incidenteId
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: ZonaIncidentesIndex
+            KeySchema:
+              - AttributeName: zona
+                KeyType: HASH
+              - AttributeName: createdAt
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+
+    HistorialTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:provider.environment.HISTORIAL_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: entidadId
+            AttributeType: S
+          - AttributeName: timestamp
+            AttributeType: S
+        KeySchema:
+          - AttributeName: entidadId
+            KeyType: HASH
+          - AttributeName: timestamp
+            KeyType: RANGE
+
+    ReportesDLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-dlq-${self:provider.stage}
+        MessageRetentionPeriod: 1209600
+
+    ReportesQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-queue-${self:provider.stage}
+        VisibilityTimeout: 60
+        RedrivePolicy:
+          deadLetterTargetArn: !GetAtt ReportesDLQ.Arn
+          maxReceiveCount: 3
