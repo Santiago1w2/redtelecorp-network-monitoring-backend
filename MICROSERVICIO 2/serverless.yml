@@ -16,6 +16,13 @@ provider:
   httpApi:
     name: ${self:service}-${sls:stage}-api
     cors: true
+    authorizers:
+      TeleCorpCognito:
+        type: jwt
+        identitySource: $request.header.Authorization
+        issuerUrl: https://cognito-idp.${aws:region}.amazonaws.com/${ssm:/telecorp/${sls:stage}/cognito/user-pool-id}
+        audience:
+          - ${ssm:/telecorp/${sls:stage}/cognito/client-id}
   environment:
     STATIONS_TABLE: !Ref StationsTable
     ANTENNAS_TABLE: !Ref AntennasTable
@@ -37,15 +44,15 @@ functions:
     name: ${self:service}-${sls:stage}
     handler: network_infrastructure.lambda_handler
     events:
-      - httpApi: { method: POST,  path: /stations }
-      - httpApi: { method: GET,   path: /stations }
-      - httpApi: { method: GET,   path: '/stations/{id}' }
-      - httpApi: { method: PATCH, path: '/stations/{id}' }
-      - httpApi: { method: POST,  path: /antennas }
-      - httpApi: { method: GET,   path: /antennas }
-      - httpApi: { method: GET,   path: '/antennas/{id}' }
-      - httpApi: { method: PATCH, path: '/antennas/{id}' }
-      - httpApi: { method: GET,   path: '/stations/{id}/antennas' }
+      - httpApi: { method: POST, path: /stations, authorizer: { name: TeleCorpCognito } }
+      - httpApi: { method: GET, path: /stations, authorizer: { name: TeleCorpCognito } }
+      - httpApi: { method: GET, path: '/stations/{id}', authorizer: { name: TeleCorpCognito } }
+      - httpApi: { method: PATCH, path: '/stations/{id}', authorizer: { name: TeleCorpCognito } }
+      - httpApi: { method: POST, path: /antennas, authorizer: { name: TeleCorpCognito } }
+      - httpApi: { method: GET, path: /antennas, authorizer: { name: TeleCorpCognito } }
+      - httpApi: { method: GET, path: '/antennas/{id}', authorizer: { name: TeleCorpCognito } }
+      - httpApi: { method: PATCH, path: '/antennas/{id}', authorizer: { name: TeleCorpCognito } }
+      - httpApi: { method: GET, path: '/stations/{id}/antennas', authorizer: { name: TeleCorpCognito } }
 
 resources:
   Resources:

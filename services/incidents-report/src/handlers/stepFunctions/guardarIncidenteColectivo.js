@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const { EventBridgeClient, PutEventsCommand } = require("@aws-sdk/client-eventbridge");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const {
   DynamoDBDocumentClient,
@@ -7,6 +8,7 @@ const {
 } = require("@aws-sdk/lib-dynamodb");
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const events = new EventBridgeClient({});
 
 exports.handler = async (event) => {
   const {
@@ -30,6 +32,7 @@ exports.handler = async (event) => {
     antenasAfectadas: antenasNormalizadas,
     esRecurrente,
     estado: "DETECTADO",
+    statusHistory: [{ estadoAnterior: null, estadoNuevo: "DETECTADO", timestamp: now, actorId: "AWS-STEP-FUNCTIONS" }],
     prioridad: diagnosticoIA.riesgo_estructural || "ALTA",
     causaRaizProbable: diagnosticoIA.causa_raiz_probable,
     requiereCuadrillaCampo: diagnosticoIA.requiere_cuadrilla_campo,
@@ -75,6 +78,23 @@ exports.handler = async (event) => {
       })
     );
   }
+
+  const eventType = "incident.collective.detected";
+  const eventDetail = {
+    version: "1.0",
+    source: "incident-management",
+    event_id: incidenteId,
+    event_type: eventType,
+    occurred_at: now,
+    data: { incident_id: incidenteId, zone_name: zona, incident_status: "DETECTADO" },
+  };
+  const published = await events.send(new PutEventsCommand({ Entries: [{
+    EventBusName: process.env.EVENT_BUS_NAME,
+    Source: "incident-management",
+    DetailType: eventType,
+    Detail: JSON.stringify(eventDetail),
+  }] }));
+  if (published.FailedEntryCount) throw new Error("No se pudo publicar el evento de incidente colectivo");
 
   return {
     ...event,

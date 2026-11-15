@@ -4,7 +4,7 @@ AWS Lambda + DynamoDB + EventBridge.
 - Tecnicos, ordenes de trabajo y asignacion automatica por zona y especialidad.
 - Reserva atomica de un tecnico y creacion de la orden usando TransactWriteItems.
 - Evento opcional de Incident Management: IncidentNeedsTechnician.
-- Solo usar datos ficticios hasta integrar el sistema de autenticacion.
+- API HTTP protegida con Cognito; eventos internos recibidos desde EventBridge.
 """
 import base64
 import binascii
@@ -196,7 +196,6 @@ def scan_page(db_table, event):
 
 
 def publish(detail_type, order):
-    # Best effort: para garantia fuerte en produccion usar DynamoDB Streams / outbox.
     detail = {key: order[key] for key in (
         'workOrderId', 'incidentId', 'zoneId', 'status', 'assignedTechnicianId'
     ) if key in order}
@@ -208,9 +207,10 @@ def publish(detail_type, order):
             'EventBusName': EVENT_BUS,
         }])
         if result.get('FailedEntryCount', 0):
-            LOGGER.warning('Evento no publicado: %s', detail_type)
+            raise RuntimeError(f'EventBridge no publicó {detail_type}')
     except Exception:
         LOGGER.exception('No se pudo publicar el evento %s', detail_type)
+        raise
 
 
 def candidates(zone_id, required_skill):
@@ -286,6 +286,7 @@ def create_order(data):
     if existing:
         if existing['incidentId'] != validated['incidentId']:
             raise ApiError(409, 'Conflicto de identificador de orden')
+        publish('WorkOrderPending' if existing['status'] == 'PENDING_ASSIGNMENT' else 'WorkOrderAssigned', existing)
         return response(200, existing)  # idempotencia ante reintentos
 
     timestamp = now_utc()
@@ -350,6 +351,9 @@ def assign_pending(work_order_id):
     orders = table(WORK_ORDERS_TABLE)
     order = get_or_404(orders, 'workOrderId', work_order_id, 'Orden')
     if order['status'] != 'PENDING_ASSIGNMENT':
+        if order['status'] == 'ASSIGNED':
+            publish('WorkOrderAssigned', order)
+            return response(200, order)
         raise ApiError(409, 'Solo se pueden asignar ordenes pendientes')
     timestamp = now_utc()
     for tech in candidates(order['zoneId'], order['requiredSkill']):
@@ -397,6 +401,9 @@ def change_order_status(work_order_id, data):
     orders = table(WORK_ORDERS_TABLE)
     order = get_or_404(orders, 'workOrderId', work_order_id, 'Orden')
     old_status = order['status']
+    if old_status == new_status:
+        publish('WorkOrderStatusChanged', order)
+        return response(200, order)
     if new_status not in TRANSITIONS[old_status]:
         raise ApiError(409, f'Transicion no permitida: {old_status} -> {new_status}')
     now = now_utc()
@@ -441,6 +448,19 @@ def lambda_handler(event, context):
         if event.get('source') == 'redtelecorp.incident-management' and event.get('detail-type') == 'IncidentNeedsTechnician':
             result = create_order(event.get('detail') or {})
             return {'handled': True, 'statusCode': result['statusCode']}
+
+        claims = ((event.get('requestContext') or {}).get('authorizer') or {}).get('jwt', {}).get('claims') or {}
+        if not claims:
+            claims = ((event.get('requestContext') or {}).get('authorizer') or {}).get('claims') or {}
+        raw_groups = claims.get('cognito:groups', [])
+        if isinstance(raw_groups, str):
+            try:
+                raw_groups = json.loads(raw_groups)
+            except ValueError:
+                raw_groups = raw_groups.replace(',', ' ').split()
+        allowed_groups = {'admin', 'supervisor_red', 'operador_soporte', 'tecnico_campo'}
+        if not isinstance(raw_groups, list) or not allowed_groups.intersection(raw_groups):
+            return response(403, {'error': 'Se requiere un rol interno de Red TeleCorp'})
 
         method = event.get('httpMethod') or (event.get('requestContext') or {}).get('http', {}).get('method')
         path = event.get('rawPath') or event.get('path') or '/'

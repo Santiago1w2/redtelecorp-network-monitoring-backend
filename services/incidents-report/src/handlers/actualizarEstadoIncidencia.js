@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const {
   DynamoDBDocumentClient,
@@ -5,8 +6,20 @@ const {
   UpdateCommand,
   PutCommand,
 } = require("@aws-sdk/lib-dynamodb");
+const { EventBridgeClient, PutEventsCommand } = require("@aws-sdk/client-eventbridge");
+const { claimsFrom, isStaff, response } = require("./auth");
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const events = new EventBridgeClient({});
+const TRANSITIONS = {
+  REGISTRADA: new Set(["EN_REVISION", "CERRADA"]),
+  EN_REVISION: new Set(["SIENDO_ATENDIDA", "SOLUCIONADA", "CERRADA"]),
+  SIENDO_ATENDIDA: new Set(["SOLUCIONADA", "CERRADA"]),
+  SOLUCIONADA: new Set(["CERRADA", "EN_REVISION"]),
+  CERRADA: new Set(),
+  DETECTADO: new Set(["EN_REVISION", "EN_ATENCION", "SOLUCIONADA", "CERRADA"]),
+  EN_ATENCION: new Set(["SOLUCIONADA", "CERRADA"]),
+};
 
 const ESTADOS_VALIDOS = [
   "REGISTRADA",
@@ -14,17 +27,14 @@ const ESTADOS_VALIDOS = [
   "SIENDO_ATENDIDA",
   "SOLUCIONADA",
   "CERRADA",
+  "DETECTADO",
+  "EN_ATENCION",
 ];
 
 exports.handler = async (event) => {
   try {
-    const claims = event.requestContext.authorizer?.claims || {};
-    const grupos = claims["cognito:groups"] || "";
-
-    const rolesPermitidos = ["admin", "supervisor_red", "operador_soporte", "tecnico_campo"];
-    const tienePermiso = rolesPermitidos.some((r) => grupos.includes(r));
-
-    if (!tienePermiso) {
+    const claims = claimsFrom(event);
+    if (!isStaff(event)) {
       return {
         statusCode: 403,
         headers: { "Access-Control-Allow-Origin": "*" },
@@ -55,12 +65,21 @@ exports.handler = async (event) => {
         body: JSON.stringify({ message: "Registro no encontrado" }),
       };
     }
+    if (!TRANSITIONS[actual.Item.estado]?.has(nuevoEstado)) {
+      return {
+        statusCode: 409,
+        headers: { "Access-Control-Allow-Origin": "*" },
+        body: JSON.stringify({ message: `Transición no permitida: ${actual.Item.estado} -> ${nuevoEstado}` }),
+      };
+    }
 
     const now = new Date().toISOString();
     let extraUpdate = "";
     const exprValues = {
       ":est": nuevoEstado,
       ":now": now,
+      ":old": actual.Item.estado,
+      ":history": [{ estadoAnterior: actual.Item.estado, estadoNuevo: nuevoEstado, timestamp: now, actorId: claims.email || claims.sub, comentario: comentario || `Estado actualizado a ${nuevoEstado}` }],
     };
 
     // Calcular tiempo de resolución si pasa a SOLUCIONADA
@@ -76,8 +95,9 @@ exports.handler = async (event) => {
       new UpdateCommand({
         TableName: tabla,
         Key: key,
-        UpdateExpression: `set estado = :est, updatedAt = :now${extraUpdate}`,
-        ExpressionAttributeValues: exprValues,
+      UpdateExpression: `set estado = :est, updatedAt = :now, statusHistory = list_append(if_not_exists(statusHistory, :empty), :history)${extraUpdate}`,
+      ConditionExpression: "estado = :old",
+      ExpressionAttributeValues: { ...exprValues, ":empty": [] },
       })
     );
 
@@ -94,6 +114,26 @@ exports.handler = async (event) => {
         },
       })
     );
+
+    const zoneName = actual.Item.zona || "zona afectada";
+    const eventType = ["SOLUCIONADA", "CERRADA"].includes(nuevoEstado)
+      ? "incident.resolved"
+      : "incident.status.changed";
+    const eventDetail = {
+      version: "1.0",
+      source: "incident-management",
+      event_id: crypto.randomUUID(),
+      event_type: eventType,
+      occurred_at: now,
+      data: { incident_id: id, zone_name: zoneName, incident_status: nuevoEstado },
+    };
+    const published = await events.send(new PutEventsCommand({ Entries: [{
+      EventBusName: process.env.EVENT_BUS_NAME,
+      Source: "incident-management",
+      DetailType: eventType,
+      Detail: JSON.stringify(eventDetail),
+    }] }));
+    if (published.FailedEntryCount) throw new Error("No se pudo publicar el cambio de estado");
 
     return {
       statusCode: 200,

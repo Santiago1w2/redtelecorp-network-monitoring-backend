@@ -14,8 +14,10 @@ provider:
     HISTORIAL_TABLE: ${self:service}-historial-${self:provider.stage}
     REPORTES_QUEUE_URL: !Ref ReportesQueue
     GCP_AI_BASE_URL: ${ssm:/telecorp/${self:provider.stage}/gcp/ai-base-url}
+    GCP_AI_API_KEY_PARAM: /telecorp/${self:provider.stage}/gcp/ai-api-key
+    EVENT_BUS_NAME: ${param:eventBusName, 'rtc-events-${sls:stage}'}
   iam:
-    role: arn:aws:iam::246946388956:role/LabRole
+    role: arn:aws:iam::${aws:accountId}:role/LabRole
 
 functions:
   # 1. API Endpoints
@@ -79,6 +81,39 @@ functions:
             type: COGNITO_USER_POOLS
             arn: ${ssm:/telecorp/${self:provider.stage}/cognito/user-pool-arn}
 
+  listarReportesUsuario:
+    handler: src/handlers/listarReportesUsuario.handler
+    events:
+      - http:
+          path: incidencias/usuario/{userId}
+          method: get
+          cors: true
+          authorizer:
+            name: TeleCorpAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: ${ssm:/telecorp/${self:provider.stage}/cognito/user-pool-arn}
+
+  listarReportesZona:
+    handler: src/handlers/listarReportesZona.handler
+    events:
+      - http:
+          path: incidencias/zona/{zona}
+          method: get
+          cors: true
+          authorizer:
+            name: TeleCorpAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: ${ssm:/telecorp/${self:provider.stage}/cognito/user-pool-arn}
+
+  listarDestinatariosIncidente:
+    handler: src/handlers/listarDestinatariosIncidente.handler
+    events:
+      - http:
+          path: v1/reports/incidents/{id}/recipients
+          method: get
+          cors: true
+          authorizer: aws_iam
+
   # 2. Worker SQS (Llama a IA Individual GCP y evalúa regla 10+ usuarios / 24h)
   procesarReporteWorker:
     handler: src/handlers/procesarReporteWorker.handler
@@ -89,6 +124,20 @@ functions:
       - sqs:
           arn: !GetAtt ReportesQueue.Arn
           batchSize: 5
+          functionResponseType: ReportBatchItemFailures
+
+  procesarEventoOrdenTrabajo:
+    handler: src/handlers/procesarEventoOrdenTrabajo.handler
+    events:
+      - eventBridge:
+          eventBus: default
+          pattern:
+            source:
+              - redtelecorp.field-operations
+            detail-type:
+              - WorkOrderPending
+              - WorkOrderAssigned
+              - WorkOrderStatusChanged
 
   # 3. Funciones internas de AWS Step Functions
   sfConsolidarZona:
@@ -108,7 +157,7 @@ stepFunctions:
   stateMachines:
     OrquestadorIncidentesStateMachine:
       name: OrquestadorIncidentesTeleCorp-${self:provider.stage}
-      role: arn:aws:iam::246946388956:role/LabRole
+      role: arn:aws:iam::${aws:accountId}:role/LabRole
       definition:
         Comment: Orquestacion de incidentes colectivos, diagnostico IA GCP y despacho de cuadrillas
         StartAt: ConsolidarZonaYAntenas
@@ -126,6 +175,20 @@ stepFunctions:
                 IntervalSeconds: 2
                 MaxAttempts: 2
                 BackoffRate: 2.0
+            Catch:
+              - ErrorEquals: ["States.ALL"]
+                ResultPath: $.diagnosticoError
+                Next: DiagnosticoFallback
+            Next: GuardarIncidenteColectivo
+
+          DiagnosticoFallback:
+            Type: Pass
+            Result:
+              causa_raiz_probable: "Diagnóstico automático no disponible; requiere verificación operativa."
+              riesgo_estructural: "MEDIO"
+              requiere_cuadrilla_campo: false
+              mensaje_notificacion_usuario: "Estamos evaluando una incidencia en tu zona. Te informaremos cuando tengamos novedades."
+            ResultPath: $.diagnosticoIA
             Next: GuardarIncidenteColectivo
 
           GuardarIncidenteColectivo:
@@ -147,6 +210,11 @@ stepFunctions:
           DespacharCuadrillaYNotificar:
             Type: Task
             Resource: !GetAtt sfDespacharCuadrillaYNotificar.Arn
+            Retry:
+              - ErrorEquals: ["States.TaskFailed"]
+                IntervalSeconds: 2
+                MaxAttempts: 3
+                BackoffRate: 2.0
             End: true
 
           FinalizarOrquestacion:
@@ -156,6 +224,8 @@ resources:
   Resources:
     ReportesTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:provider.environment.REPORTES_TABLE}
         BillingMode: PAY_PER_REQUEST
@@ -167,6 +237,8 @@ resources:
           - AttributeName: createdAt
             AttributeType: S
           - AttributeName: userId
+            AttributeType: S
+          - AttributeName: incidenteColectivoId
             AttributeType: S
         KeySchema:
           - AttributeName: reporteId
@@ -188,9 +260,23 @@ resources:
                 KeyType: RANGE
             Projection:
               ProjectionType: ALL
+          - IndexName: IncidentReportesIndex
+            KeySchema:
+              - AttributeName: incidenteColectivoId
+                KeyType: HASH
+              - AttributeName: createdAt
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+        SSESpecification:
+          SSEEnabled: true
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
 
     IncidentesColectivosTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:provider.environment.INCIDENTES_TABLE}
         BillingMode: PAY_PER_REQUEST
@@ -213,9 +299,15 @@ resources:
                 KeyType: RANGE
             Projection:
               ProjectionType: ALL
+        SSESpecification:
+          SSEEnabled: true
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
 
     HistorialTable:
       Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
       Properties:
         TableName: ${self:provider.environment.HISTORIAL_TABLE}
         BillingMode: PAY_PER_REQUEST
@@ -229,6 +321,10 @@ resources:
             KeyType: HASH
           - AttributeName: timestamp
             KeyType: RANGE
+        SSESpecification:
+          SSEEnabled: true
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
 
     ReportesDLQ:
       Type: AWS::SQS::Queue

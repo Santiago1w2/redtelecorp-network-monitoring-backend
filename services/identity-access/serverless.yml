@@ -9,7 +9,7 @@ provider:
     USERS_TABLE: ${self:service}-users-${self:provider.stage}
     ADMIN_EMAILS: ${ssm:/telecorp/${self:provider.stage}/cognito/admin-emails}
   iam:
-    role: arn:aws:iam::246946388956:role/LabRole
+    role: arn:aws:iam::${aws:accountId}:role/LabRole
 
 functions:
   preSignUp:
@@ -29,6 +29,15 @@ functions:
             name: TeleCorpAuthorizer
             type: COGNITO_USER_POOLS
             arn: !GetAtt TeleCorpUserPool.Arn
+
+  getNotificationContact:
+    handler: src/handlers/getNotificationContact.handler
+    events:
+      - http:
+          path: v1/identity/users/{userId}/notification-contact
+          method: get
+          cors: true
+          authorizer: aws_iam
 
   crearUsuario:
     handler: src/handlers/crearUsuario.handler

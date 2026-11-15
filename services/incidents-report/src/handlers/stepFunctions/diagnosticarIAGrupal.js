@@ -1,3 +1,5 @@
+const { getAiApiKey } = require("../getAiApiKey");
+
 exports.handler = async (event) => {
   const { zona, descripciones, antenasNormalizadas } = event;
 
@@ -11,7 +13,10 @@ exports.handler = async (event) => {
     `${process.env.GCP_AI_BASE_URL}/api/v1/ai/diagnose-incident`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": await getAiApiKey(),
+      },
       body: JSON.stringify(payload),
     }
   );

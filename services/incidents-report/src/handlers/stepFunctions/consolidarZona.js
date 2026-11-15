@@ -4,7 +4,7 @@ const { DynamoDBDocumentClient, QueryCommand } = require("@aws-sdk/lib-dynamodb"
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 exports.handler = async (event) => {
-  const { zona, triggerReporteId, usuariosUnicosAfectados, antenas_estado } = event;
+  const { zona, tipoProblema, triggerReporteId, usuariosUnicosAfectados, antenas_estado } = event;
   const hace24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
   // Obtener reportes recientes de la zona
@@ -13,9 +13,11 @@ exports.handler = async (event) => {
       TableName: process.env.REPORTES_TABLE,
       IndexName: "ZonaCreatedAtIndex",
       KeyConditionExpression: "zona = :z AND createdAt >= :desde",
-      ExpressionAttributeValues: {
+        FilterExpression: "tipoProblema = :tipo",
+        ExpressionAttributeValues: {
         ":z": zona,
         ":desde": hace24h,
+          ":tipo": tipoProblema || "GENERAL",
       },
     })
   );
@@ -58,6 +60,7 @@ exports.handler = async (event) => {
     zona,
     triggerReporteId,
     usuariosUnicosAfectados: Math.max(usuariosUnicosAfectados, new Set(items.map((i) => i.userId)).size),
+    tipoProblema: tipoProblema || "GENERAL",
     reporteIds,
     descripciones,
     antenasNormalizadas,

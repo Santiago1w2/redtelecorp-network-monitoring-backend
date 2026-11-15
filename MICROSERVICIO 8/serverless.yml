@@ -14,7 +14,14 @@ provider:
   logRetentionInDays: 7
   httpApi:
     name: ${self:service}-${sls:stage}-api
-    cors: true   # MVP: integrar autenticacion/Cognito antes de usar datos reales
+    cors: true
+    authorizers:
+      TeleCorpCognito:
+        type: jwt
+        identitySource: $request.header.Authorization
+        issuerUrl: https://cognito-idp.${aws:region}.amazonaws.com/${ssm:/telecorp/${sls:stage}/cognito/user-pool-id}
+        audience:
+          - ${ssm:/telecorp/${sls:stage}/cognito/client-id}
   environment:
     TECHNICIANS_TABLE: !Ref TechniciansTable
     WORK_ORDERS_TABLE: !Ref WorkOrdersTable
@@ -44,15 +51,15 @@ functions:
     name: ${self:service}-${sls:stage}
     handler: field_operations.lambda_handler
     events:
-      - httpApi: { method: POST,  path: /technicians }
-      - httpApi: { method: GET,   path: /technicians }
-      - httpApi: { method: GET,   path: '/technicians/{id}' }
-      - httpApi: { method: PATCH, path: '/technicians/{id}' }
-      - httpApi: { method: POST,  path: /work-orders }
-      - httpApi: { method: GET,   path: /work-orders }
-      - httpApi: { method: GET,   path: '/work-orders/{id}' }
-      - httpApi: { method: POST,  path: '/work-orders/{id}/assign' }
-      - httpApi: { method: PATCH, path: '/work-orders/{id}/status' }
+      - httpApi: { method: POST, path: /technicians, authorizer: { name: TeleCorpCognito } }
+      - httpApi: { method: GET, path: /technicians, authorizer: { name: TeleCorpCognito } }
+      - httpApi: { method: GET, path: '/technicians/{id}', authorizer: { name: TeleCorpCognito } }
+      - httpApi: { method: PATCH, path: '/technicians/{id}', authorizer: { name: TeleCorpCognito } }
+      - httpApi: { method: POST, path: /work-orders, authorizer: { name: TeleCorpCognito } }
+      - httpApi: { method: GET, path: /work-orders, authorizer: { name: TeleCorpCognito } }
+      - httpApi: { method: GET, path: '/work-orders/{id}', authorizer: { name: TeleCorpCognito } }
+      - httpApi: { method: POST, path: '/work-orders/{id}/assign', authorizer: { name: TeleCorpCognito } }
+      - httpApi: { method: PATCH, path: '/work-orders/{id}/status', authorizer: { name: TeleCorpCognito } }
       # Contrato para el microservicio 5; origen: bus EventBridge default.
       - eventBridge:
           pattern:

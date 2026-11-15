@@ -145,6 +145,8 @@ def lambda_handler(event, context):
         recipients = page['recipient_ids']
         if not isinstance(recipients, list) or len(recipients) > 100:
             raise ConnectionError('Contrato de destinatarios inválido')
+        if count == 0 and not recipients and not page.get('cursor'):
+            raise ConnectionError('Incident recipients are not visible yet; retrying')
         for user in recipients:
             identifier(user)
             notification_id = create_notification({'recipient_id': user, 'incident_id': incident, 'template': TYPES[detail['event_type']], 'channels': ['EMAIL', 'SMS', 'IN_APP'], 'variables': {'zone_name': data['zone_name'], 'incident_status': data['incident_status']}}, 'event:' + detail['event_id'] + ':' + user, detail['occurred_at'])

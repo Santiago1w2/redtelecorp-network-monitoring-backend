@@ -13,6 +13,20 @@
 !/network-telemetry/
 !/coverage-geospatial/
 !/notifications/
+!/identity-access/
+!/identity-access/src/
+!/identity-access/src/handlers/
+!/identity-access/src/handlers/getNotificationContact.js
+!/incidents-report/
+!/incidents-report/README.md
+!/incidents-report/src/
+!/incidents-report/src/handlers/
+!/incidents-report/src/handlers/auth.js
+!/incidents-report/src/handlers/getAiApiKey.js
+!/incidents-report/src/handlers/procesarEventoOrdenTrabajo.js
+!/incidents-report/src/handlers/listarReportesUsuario.js
+!/incidents-report/src/handlers/listarReportesZona.js
+!/incidents-report/src/handlers/listarDestinatariosIncidente.js
 
 /network-telemetry/*
 !/network-telemetry/serverless.yml

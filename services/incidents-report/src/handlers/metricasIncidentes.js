@@ -1,10 +1,12 @@
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const { DynamoDBDocumentClient, ScanCommand } = require("@aws-sdk/lib-dynamodb");
+const { isStaff, response } = require("./auth");
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
-exports.handler = async () => {
+exports.handler = async (event) => {
   try {
+    if (!isStaff(event)) return response(403, { message: "Se requiere un rol interno" });
     const [reportesRes, colectivosRes] = await Promise.all([
       ddb.send(new ScanCommand({ TableName: process.env.REPORTES_TABLE })),
       ddb.send(new ScanCommand({ TableName: process.env.INCIDENTES_TABLE })),

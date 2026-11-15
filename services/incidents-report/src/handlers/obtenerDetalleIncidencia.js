@@ -4,6 +4,7 @@ const {
   GetCommand,
   QueryCommand,
 } = require("@aws-sdk/lib-dynamodb");
+const { claimsFrom, isStaff, response } = require("./auth");
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
@@ -23,6 +24,10 @@ exports.handler = async (event) => {
         headers: { "Access-Control-Allow-Origin": "*" },
         body: JSON.stringify({ message: "Incidencia no encontrada" }),
       };
+    }
+
+    if (!isStaff(event) && itemRes.Item.userId !== claimsFrom(event).sub) {
+      return response(403, { message: "Solo puedes consultar tus propias incidencias" });
     }
 
     const historialRes = await ddb.send(

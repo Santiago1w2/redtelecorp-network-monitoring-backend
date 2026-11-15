@@ -1,28 +1,29 @@
-# Red TeleCorp — MS6: AI Network Intelligence
+# Red TeleCorp — IA Network Intelligence
 
-Microservicio de Inteligencia Artificial desplegado en **Google Cloud Run** con **Vertex AI (`gemini-3.5-flash-lite`)** para la plataforma híbrida de telecomunicaciones Red TeleCorp.
+Servicio de análisis desplegado en Google Cloud Run con Vertex AI.
 
 ## Endpoints
 
-| Método | Ruta | Auth (`x-api-key`) | Descripción |
-| :--- | :--- | :---: | :--- |
-| `GET` | `/` | No | Health check del servicio y estado multimodal. |
-| `POST` | `/api/v1/ai/prioritize` | Sí | Triaje de reportes individuales (texto e imagen Base64) y detección de infraestructura crítica. |
-| `POST` | `/api/v1/ai/diagnose-incident` | Sí | Correlación masiva de reportes zonales y métricas de antenas para diagnóstico de causa raíz. |
-| `POST` | `/api/v1/ai/chat` | No | Asistente virtual público de soporte técnico y recolección de datos de incidencia. |
+| Método | Ruta | Autenticación | Uso |
+|---|---|---|---|
+| GET | `/` | Pública | Health check |
+| POST | `/api/v1/ai/prioritize` | `x-api-key` | Clasificar y priorizar reportes |
+| POST | `/api/v1/ai/diagnose-incident` | `x-api-key` | Diagnosticar afectaciones colectivas |
+| POST | `/api/v1/ai/chat` | Pública | Asistente de soporte |
 
-## Variables de Entorno
+`API_SECRET_TOKEN` es obligatorio; no hay clave predeterminada. Configura el mismo secreto en Google Secret Manager y en AWS SSM Parameter Store como `SecureString` en `/telecorp/<stage>/gcp/ai-api-key`. `incidents-report` lo lee desde SSM en tiempo de ejecución, con caché breve. Cognito sigue siendo la autoridad de login y autenticación de usuarios en las APIs de AWS.
 
-- `API_SECRET_TOKEN`: Token interno de autenticación entre microservicios (por defecto `telecorp-secret-2026`).
-- `GCP_PROJECT`: ID del proyecto en Google Cloud (`red-telecorp`).
-- `GCP_LOCATION`: Región del endpoint de Vertex AI (`global`).
-- `MODEL_ID`: Modelo generativo utilizado (`gemini-3.5-flash-lite`).
+## Despliegue
 
-## Despliegue en Google Cloud Run
+Guarda primero la clave en Google Secret Manager y habilita Vertex AI:
 
 ```bash
 gcloud run deploy ms6-ai-intelligence \
   --source . \
   --region us-central1 \
   --allow-unauthenticated \
-  --set-env-vars API_SECRET_TOKEN="telecorp-secret-2026",GCP_PROJECT="red-telecorp",GCP_LOCATION="global"
+  --set-secrets API_SECRET_TOKEN=telecorp-ai-api-key:latest \
+  --set-env-vars GCP_PROJECT=red-telecorp,GCP_LOCATION=global
+```
+
+Las rutas de priorización y diagnóstico requieren `x-api-key`. La URL de Cloud Run queda invocable públicamente porque aún no se configuró Workload Identity Federation entre AWS y Google; no la expongas al frontend. El endpoint `/api/v1/ai/chat` también es público: antes de producción, expónlo mediante un proxy AWS protegido por Cognito. Configura `/telecorp/<stage>/gcp/ai-base-url` en SSM con la URL HTTPS del servicio.

@@ -2,6 +2,7 @@
 import base64
 import json
 import logging
+import os
 from decimal import Decimal, InvalidOperation
 
 import boto3
@@ -10,8 +11,8 @@ from botocore.exceptions import ClientError
 
 # Microservicio 2: Network Infrastructure
 dynamodb = boto3.resource("dynamodb")
-stations_table = dynamodb.Table("redtelecorp-stations")
-antennas_table = dynamodb.Table("redtelecorp-antennas")
+stations_table = dynamodb.Table(os.environ.get("STATIONS_TABLE", "redtelecorp-stations"))
+antennas_table = dynamodb.Table(os.environ.get("ANTENNAS_TABLE", "redtelecorp-antennas"))
 
 STATES = {"ACTIVE", "INACTIVE", "MAINTENANCE"}
 TECHNOLOGIES = {"3G", "4G", "5G"}
@@ -211,6 +212,18 @@ def scan_all(table, filter_expression=None):
 
 
 def lambda_handler(event, context):
+    claims = ((event.get("requestContext") or {}).get("authorizer") or {}).get("jwt", {}).get("claims") or {}
+    if not claims:
+        claims = ((event.get("requestContext") or {}).get("authorizer") or {}).get("claims") or {}
+    groups = claims.get("cognito:groups", [])
+    if isinstance(groups, str):
+        try:
+            groups = json.loads(groups)
+        except ValueError:
+            groups = groups.replace(",", " ").split()
+    allowed = {"admin", "supervisor_red", "operador_soporte", "tecnico_campo"}
+    if not set(groups if isinstance(groups, list) else []).intersection(allowed):
+        return reply(403, {"error": "Se requiere un rol interno de Red TeleCorp"})
     method = event.get("httpMethod") or event.get("requestContext", {}).get("http", {}).get("method", "")
     path = event.get("rawPath") or event.get("path") or "/"
     parts = [part for part in path.strip("/").split("/") if part]

@@ -10,6 +10,7 @@ exports.handler = async (event) => {
   try {
     const claims = event.requestContext.authorizer?.claims || {};
     const userId = claims.sub;
+    if (!userId) return { statusCode: 401, headers: { "Access-Control-Allow-Origin": "*" }, body: JSON.stringify({ message: "Token Cognito inválido" }) };
     const body = JSON.parse(event.body || "{}");
 
     const {
@@ -46,6 +47,7 @@ exports.handler = async (event) => {
       descripcion,
       fechaIncidente: fechaIncidente || now,
       estado: "REGISTRADA",
+      statusHistory: [{ estadoAnterior: null, estadoNuevo: "REGISTRADA", timestamp: now, actorId: userId }],
       prioridad: "PENDIENTE_IA",
       incidenteColectivoId: null,
       createdAt: now,
@@ -83,10 +85,10 @@ exports.handler = async (event) => {
           reporteId,
           userId,
           zona: item.zona,
+          tipoProblema: item.tipoProblema,
           descripcion,
           imagen_mime_type: imagen_mime_type || null,
           imagen_base64: imagen_base64 || null,
-          antenas_estado: body.antenas_estado || [], // Opcional: telemetría enviada en pruebas
         }),
       })
     );
