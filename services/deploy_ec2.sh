@@ -79,8 +79,8 @@ AWS_ERROR_FILE="$(mktemp)"
 trap 'rm -f -- "$AWS_ERROR_FILE"' EXIT
 ACCOUNT_ID="$("${AWS[@]}" sts get-caller-identity --query Account --output text)" || fail 'No se pudo autenticar con AWS. Revisa el instance profile o AWS_PROFILE.'
 [[ "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || fail 'AWS no devolvió un identificador de cuenta válido.'
-LAMBDA_ROLE_ARN="${LAMBDA_ROLE_ARN:-arn:aws:iam::$ACCOUNT_ID:role/LabRole}"
-[[ "$LAMBDA_ROLE_ARN" == "arn:aws:iam::$ACCOUNT_ID:role/"* ]] || fail 'LAMBDA_ROLE_ARN debe pertenecer a la cuenta autenticada.'
+LAMBDA_ROLE_ARN='arn:aws:iam::573505212581:role/LabRole'
+[[ "$ACCOUNT_ID" == '573505212581' ]] || fail 'Estos Serverless utilizan LabRole de la cuenta 573505212581. Cambia las credenciales AWS a esa cuenta.'
 if [[ -z "$COGNITO_USER_POOL_ARN" ]]; then
   COGNITO_USER_POOL_ARN="$("${AWS[@]}" ssm get-parameter --name "/telecorp/$STAGE/cognito/user-pool-arn" --query Parameter.Value --output text)" || fail 'No se pudo leer el User Pool de Identity. Despliega Identity primero o configura COGNITO_USER_POOL_ARN con su ARN real.'
 fi
@@ -131,7 +131,6 @@ fi
 COMMON_PARAMS=(--stage "$STAGE" --region "$AWS_REGION"
   --param="frontendOrigin=$FRONTEND_ORIGIN"
   --param="cognitoUserPoolArn=$COGNITO_USER_POOL_ARN"
-  --param="lambdaRoleArn=$LAMBDA_ROLE_ARN"
   --param="eventBusName=$EVENT_BUS_NAME")
 
 run_service() (

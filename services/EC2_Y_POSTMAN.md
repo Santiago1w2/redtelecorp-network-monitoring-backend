@@ -55,7 +55,7 @@ Si `venv` no está disponible, instala el paquete `python3-venv` de tu distribuc
 
 Asocia a EC2 un IAM instance profile autorizado para desplegar estos stacks y consultar STS, CloudFormation y EventBridge. En AWS Academy, también puedes utilizar un perfil temporal de AWS CLI, con su session token vigente, y seleccionar `AWS_PROFILE` en el archivo local. No copies credenciales en el script. La identidad de despliegue necesita permisos de creación/actualización de recursos e `iam:PassRole` para el rol de ejecución.
 
-El rol de ejecución de Lambda debe existir. Por defecto se usa `arn:aws:iam::<cuenta-autenticada>:role/LabRole`; puedes configurar `LAMBDA_ROLE_ARN`. El stack utiliza ese rol y no modifica sus políticas. Se retiró de los YAML el bloque informativo `custom.requiredIamPolicy`, que no concedía permisos. Un administrador debe autorizar los recursos concretos de cada servicio:
+El rol de ejecución de Lambda debe existir: todos los Serverless implementados usan directamente `arn:aws:iam::573505212581:role/LabRole`. El Bash exige credenciales de esa cuenta; `LAMBDA_ROLE_ARN` ya no cambia el rol. El stack utiliza ese rol y no modifica sus políticas. Un administrador debe autorizar los recursos concretos de cada servicio:
 
 | Servicio | Acciones necesarias para sus Lambdas |
 |---|---|
@@ -125,13 +125,16 @@ Después de cada despliegue, las salidas reales se guardan en `.deploy-output/<s
 
 ## 3. ¿Serverless crea SQS y SNS?
 
-**Sí, los YAML definen siete colas SQS y un topic SNS. Se crean al desplegar con permisos suficientes; escribir el YAML o ejecutar `package` no los crea.** Para `STAGE=dev`:
+**Sí, los YAML de 03/04/09 definen diez colas SQS y un topic SNS. Se crean al desplegar con permisos suficientes; escribir el YAML o ejecutar `package` no los crea.** Para `STAGE=dev`:
 
 | Servicio | Tipo | Nombre definido | Uso |
 |---|---|---|---|
 | 03 | SQS | `rtc-telemetry-ingest-dev` | Cola de mediciones → `process_telemetry` |
 | 03 | SQS | `rtc-telemetry-ingest-dlq-dev` | Mediciones fallidas tras 5 recepciones |
 | 03 | SQS | `rtc-network-telemetry-stream-failures-dev` | Fallos de consumidores de Streams |
+| 03 | SQS | `rtc-incidents-input-dev` | Eventos de telemetría, reportes y órdenes; consumidor 05 pendiente |
+| 03 | SQS | `rtc-incidents-input-dlq-dev` | Reintentos agotados del futuro consumidor 05 |
+| 03 | SQS | `rtc-incidents-event-delivery-failures-dev` | EventBridge no pudo entregar a la entrada de 05 |
 | 04 | SQS | `rtc-coverage-geospatial-stream-failures-dev` | Fallos de Streams/EventBridge de sincronización |
 | 09 | SQS | `rtc-notifications-send-dev` | Intentos de envío → `send_notification` |
 | 09 | SQS | `rtc-notifications-send-dlq-dev` | Envíos fallidos tras 5 recepciones |

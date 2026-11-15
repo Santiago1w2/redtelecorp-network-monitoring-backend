@@ -2,6 +2,7 @@
 import base64
 import json
 import logging
+import os
 from decimal import Decimal, InvalidOperation
 
 import boto3
@@ -10,8 +11,8 @@ from botocore.exceptions import ClientError
 
 # Microservicio 2: Network Infrastructure
 dynamodb = boto3.resource("dynamodb")
-stations_table = dynamodb.Table("redtelecorp-stations")
-antennas_table = dynamodb.Table("redtelecorp-antennas")
+stations_table = dynamodb.Table(os.environ["STATIONS_TABLE"])
+antennas_table = dynamodb.Table(os.environ["ANTENNAS_TABLE"])
 
 STATES = {"ACTIVE", "INACTIVE", "MAINTENANCE"}
 TECHNOLOGIES = {"3G", "4G", "5G"}
@@ -126,22 +127,22 @@ def validate_station(data, partial=False):
 
 
 def validate_antenna(data, partial=False):
-    allowed = {"antennaId", "stationId", "name", "technology", "status"}
-    editable = allowed - {"antennaId", "stationId"}
+    allowed = {"antenna_id", "stationId", "name", "technology", "status"}
+    editable = allowed - {"antenna_id", "stationId"}
     unexpected = set(data) - (editable if partial else allowed)
     if unexpected:
         raise ApiError(400, "Campos no permitidos: " + ", ".join(sorted(unexpected)))
     if not partial:
-        missing = {"antennaId", "stationId", "name", "technology"} - set(data)
+        missing = {"antenna_id", "stationId", "name", "technology"} - set(data)
         if missing:
             raise ApiError(400, "Faltan campos: " + ", ".join(sorted(missing)))
     elif not data:
         raise ApiError(400, "No hay campos para actualizar")
 
     result = {}
-    for key in ("antennaId", "stationId", "name"):
+    for key in ("antenna_id", "stationId", "name"):
         if key in data:
-            result[key] = nonempty_text(data[key], key, 64 if key.endswith("Id") else 150)
+            result[key] = nonempty_text(data[key], key, 64 if key in {"antenna_id", "stationId"} else 150)
     if "technology" in data:
         result["technology"] = one_of(data["technology"], "technology", TECHNOLOGIES)
     if "status" in data:
@@ -152,7 +153,7 @@ def validate_antenna(data, partial=False):
 
 
 def get_or_404(table, key_name, item_id, label):
-    result = table.get_item(Key={key_name: item_id})
+    result = table.get_item(Key={key_name: item_id}, ConsistentRead=True)
     item = result.get("Item")
     if item is None:
         raise ApiError(404, f"{label} no encontrada")
@@ -219,6 +220,10 @@ def lambda_handler(event, context):
         if method == "OPTIONS":
             return reply(200, {"message": "OK"})
 
+        # Contrato interno consumido por Telemetry 03 y Coverage 04.
+        if method == "GET" and len(parts) == 4 and parts[:3] == ["v1", "infrastructure", "antennas"]:
+            return reply(200, get_or_404(antennas_table, "antenna_id", parts[3], "Antena"))
+
         # === ESTACIONES BASE ===
         if parts == ["stations"]:
             if method == "POST":
@@ -249,7 +254,7 @@ def lambda_handler(event, context):
             if method == "POST":
                 antenna = validate_antenna(read_body(event))
                 get_or_404(stations_table, "stationId", antenna["stationId"], "Estacion")
-                return reply(201, create_unique(antennas_table, "antennaId", antenna, "Antena"))
+                return reply(201, create_unique(antennas_table, "antenna_id", antenna, "Antena"))
             if method == "GET":
                 items = scan_all(antennas_table)
                 return reply(200, {"antennas": items, "count": len(items)})
@@ -257,10 +262,10 @@ def lambda_handler(event, context):
         if len(parts) == 2 and parts[0] == "antennas":
             antenna_id = parts[1]
             if method == "GET":
-                return reply(200, get_or_404(antennas_table, "antennaId", antenna_id, "Antena"))
+                return reply(200, get_or_404(antennas_table, "antenna_id", antenna_id, "Antena"))
             if method == "PATCH":
                 changes = validate_antenna(read_body(event), partial=True)
-                result = update_existing(antennas_table, "antennaId", antenna_id, changes, "Antena")
+                result = update_existing(antennas_table, "antenna_id", antenna_id, changes, "Antena")
                 return reply(200, result)
 
         return reply(404, {"error": "Ruta o metodo no encontrado"})

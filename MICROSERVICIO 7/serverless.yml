@@ -1,3 +1,4 @@
+org: santiagomorales
 # Microservicio 7 - Customer Reports / Red TeleCorp
 # Ejecutar desde esta carpeta: serverless deploy --stage dev
 service: redtelecorp-customer-reports
@@ -18,24 +19,9 @@ provider:
   environment:
     REPORTS_TABLE: !Ref ReportsTable
     EVENT_BUS: !Ref ReportsEventBus
+    SHARED_EVENT_BUS: ${param:eventBusName, 'rtc-events-${sls:stage}'}
   iam:
-    role:
-      statements:
-        - Effect: Allow
-          Action:
-            - dynamodb:PutItem
-            - dynamodb:GetItem
-            - dynamodb:UpdateItem
-            - dynamodb:Scan
-            - dynamodb:Query
-          Resource:
-            - !GetAtt ReportsTable.Arn
-            - !Sub '${ReportsTable.Arn}/index/*'
-        - Effect: Allow
-          Action:
-            - events:PutEvents
-          Resource:
-            - !GetAtt ReportsEventBus.Arn
+    role: arn:aws:iam::573505212581:role/LabRole
 
 functions:
   customerReports:
@@ -48,6 +34,19 @@ functions:
       - httpApi: { method: GET,   path: '/reports/user/{userId}' }
       - httpApi: { method: GET,   path: '/reports/zone/{zoneId}' }
       - httpApi: { method: PATCH, path: '/reports/{id}/status' }
+
+  forwardEvents:
+    handler: forward_event.lambda_handler
+    events:
+      - eventBridge:
+          eventBus: !GetAtt ReportsEventBus.Arn
+          pattern:
+            source:
+              - redtelecorp.customer-reports
+            detail-type:
+              - CustomerReportCreated
+              - CustomerReportStatusChanged
+
 
 resources:
   Resources:
@@ -90,6 +89,24 @@ resources:
       Type: AWS::Events::EventBus
       Properties:
         Name: ${self:service}-${sls:stage}-events
+
+    ForwardFailureQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: rtc-customer-reports-forward-failures-${sls:stage}
+        SqsManagedSseEnabled: true
+        MessageRetentionPeriod: 1209600
+
+    ForwardEventRetries:
+      Type: AWS::Lambda::EventInvokeConfig
+      Properties:
+        FunctionName: !Ref ForwardEventsLambdaFunction
+        Qualifier: $LATEST
+        MaximumRetryAttempts: 2
+        MaximumEventAgeInSeconds: 21600
+        DestinationConfig:
+          OnFailure:
+            Destination: !GetAtt ForwardFailureQueue.Arn
 
   Outputs:
     ReportsEventBusName:

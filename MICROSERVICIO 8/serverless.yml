@@ -1,3 +1,4 @@
+org: santiagomorales
 # Microservicio 8 - Field Operations / Red TeleCorp
 # Desplegar desde esta carpeta: serverless deploy --stage dev
 service: redtelecorp-field-operations
@@ -19,25 +20,9 @@ provider:
     TECHNICIANS_TABLE: !Ref TechniciansTable
     WORK_ORDERS_TABLE: !Ref WorkOrdersTable
     EVENT_BUS: default
+    SHARED_EVENT_BUS: ${param:eventBusName, 'rtc-events-${sls:stage}'}
   iam:
-    role:
-      statements:
-        - Effect: Allow
-          Action:
-            - dynamodb:PutItem
-            - dynamodb:GetItem
-            - dynamodb:UpdateItem
-            - dynamodb:Scan
-            - dynamodb:Query
-          Resource:
-            - !GetAtt TechniciansTable.Arn
-            - !GetAtt WorkOrdersTable.Arn
-            - !Sub '${TechniciansTable.Arn}/index/*'
-        - Effect: Allow
-          Action:
-            - events:PutEvents
-          Resource:
-            - !Sub 'arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default'
+    role: arn:aws:iam::573505212581:role/LabRole
 
 functions:
   fieldOperations:
@@ -60,6 +45,20 @@ functions:
               - redtelecorp.incident-management
             detail-type:
               - IncidentNeedsTechnician
+
+  forwardEvents:
+    handler: forward_event.lambda_handler
+    events:
+      - eventBridge:
+          eventBus: default
+          pattern:
+            source:
+              - redtelecorp.field-operations
+            detail-type:
+              - WorkOrderAssigned
+              - WorkOrderPending
+              - WorkOrderStatusChanged
+
 
 resources:
   Resources:
@@ -94,3 +93,76 @@ resources:
         KeySchema:
           - AttributeName: workOrderId
             KeyType: HASH
+
+    ForwardFailureQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: rtc-field-operations-forward-failures-${sls:stage}
+        SqsManagedSseEnabled: true
+        MessageRetentionPeriod: 1209600
+
+    ForwardEventRetries:
+      Type: AWS::Lambda::EventInvokeConfig
+      Properties:
+        FunctionName: !Ref ForwardEventsLambdaFunction
+        Qualifier: $LATEST
+        MaximumRetryAttempts: 2
+        MaximumEventAgeInSeconds: 21600
+        DestinationConfig:
+          OnFailure:
+            Destination: !GetAtt ForwardFailureQueue.Arn
+
+    SharedIncidentRule:
+      Type: AWS::Events::Rule
+      Properties:
+        Name: rtc-field-operations-shared-incident-${sls:stage}
+        EventBusName: ${param:eventBusName, 'rtc-events-${sls:stage}'}
+        EventPattern:
+          source:
+            - redtelecorp.incident-management
+          detail-type:
+            - IncidentNeedsTechnician
+        Targets:
+          - Id: FieldOperations
+            Arn: !GetAtt FieldOperationsLambdaFunction.Arn
+            RetryPolicy:
+              MaximumRetryAttempts: 10
+              MaximumEventAgeInSeconds: 86400
+            DeadLetterConfig:
+              Arn: !GetAtt ForwardFailureQueue.Arn
+
+    SharedIncidentPermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        FunctionName: !Ref FieldOperationsLambdaFunction
+        Action: lambda:InvokeFunction
+        Principal: events.amazonaws.com
+        SourceArn: !GetAtt SharedIncidentRule.Arn
+
+    SharedIncidentFailurePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+          - !Ref ForwardFailureQueue
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: events.amazonaws.com
+              Action: sqs:SendMessage
+              Resource: !GetAtt ForwardFailureQueue.Arn
+              Condition:
+                ArnEquals:
+                  aws:SourceArn: !GetAtt SharedIncidentRule.Arn
+
+    WorkOrderRetries:
+      Type: AWS::Lambda::EventInvokeConfig
+      Properties:
+        FunctionName: !Ref FieldOperationsLambdaFunction
+        Qualifier: $LATEST
+        MaximumRetryAttempts: 2
+        MaximumEventAgeInSeconds: 21600
+        DestinationConfig:
+          OnFailure:
+            Destination: !GetAtt ForwardFailureQueue.Arn

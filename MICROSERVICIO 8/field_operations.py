@@ -436,6 +436,7 @@ def change_order_status(work_order_id, data):
 
 
 def lambda_handler(event, context):
+    internal_event = event.get('source') == 'redtelecorp.incident-management' and event.get('detail-type') == 'IncidentNeedsTechnician'
     try:
         # Evento publicado por Incident Management en EventBridge (bus default).
         if event.get('source') == 'redtelecorp.incident-management' and event.get('detail-type') == 'IncidentNeedsTechnician':
@@ -469,10 +470,16 @@ def lambda_handler(event, context):
                 return change_order_status(segments[1], parse_body(event))
         return response(404, {'error': 'Ruta o metodo no encontrado'})
     except ApiError as exc:
+        if internal_event:
+            raise
         return response(exc.status, {'error': exc.message})
     except ClientError:
+        if internal_event:
+            raise
         LOGGER.exception('Error AWS DynamoDB/EventBridge')
         return response(500, {'error': 'Error de infraestructura AWS'})
     except Exception:
+        if internal_event:
+            raise
         LOGGER.exception('Error interno Field Operations')
         return response(500, {'error': 'Error interno del servidor'})

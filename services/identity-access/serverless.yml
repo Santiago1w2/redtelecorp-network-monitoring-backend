@@ -1,3 +1,4 @@
+org: santiagomorales
 service: telecorp-identity-service
 
 provider:
@@ -9,7 +10,7 @@ provider:
     USERS_TABLE: ${self:service}-users-${self:provider.stage}
     ADMIN_EMAILS: ${ssm:/telecorp/${self:provider.stage}/cognito/admin-emails}
   iam:
-    role: arn:aws:iam::246946388956:role/LabRole
+    role: arn:aws:iam::573505212581:role/LabRole
 
 functions:
   preSignUp:

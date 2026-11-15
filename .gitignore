@@ -2,3 +2,17 @@
 /*
 !/.gitignore
 !/services/
+
+# Handlers y Serverless de los microservicios existentes 02, 07 y 08.
+!/MICROSERVICIO 2/
+/MICROSERVICIO 2/*
+!/MICROSERVICIO 2/*.py
+!/MICROSERVICIO 2/serverless.yml
+!/MICROSERVICIO 7/
+/MICROSERVICIO 7/*
+!/MICROSERVICIO 7/*.py
+!/MICROSERVICIO 7/serverless.yml
+!/MICROSERVICIO 8/
+/MICROSERVICIO 8/*
+!/MICROSERVICIO 8/*.py
+!/MICROSERVICIO 8/serverless.yml

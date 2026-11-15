@@ -12,7 +12,7 @@ provider:
   timeout: 30
   logRetentionInDays: 14
   iam:
-    role: ${param:lambdaRoleArn, 'arn:aws:iam::369907334103:role/LabRole'}
+    role: arn:aws:iam::573505212581:role/LabRole
   environment:
     FRONTEND_ORIGIN: ${param:frontendOrigin, env:FRONTEND_ORIGIN}
     COVERAGE_TABLE: rtc-coverage-${sls:stage}

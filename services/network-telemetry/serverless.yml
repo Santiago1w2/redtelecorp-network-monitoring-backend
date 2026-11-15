@@ -12,7 +12,7 @@ provider:
   timeout: 30
   logRetentionInDays: 14
   iam:
-    role: ${param:lambdaRoleArn, 'arn:aws:iam::369907334103:role/LabRole'}
+    role: arn:aws:iam::573505212581:role/LabRole
   environment:
     FRONTEND_ORIGIN: ${param:frontendOrigin, env:FRONTEND_ORIGIN}
     LATEST_TABLE: rtc-telemetry-latest-${sls:stage}
@@ -326,6 +326,83 @@ resources:
       Properties:
         Name: ${param:eventBusName, 'rtc-events-${sls:stage}'}
 
+    # Entrada de 05: conserva eventos hasta que exista su consumidor SQS.
+    IncidentInputDlq:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: rtc-incidents-input-dlq-${sls:stage}
+        SqsManagedSseEnabled: true
+        MessageRetentionPeriod: 1209600
+
+    IncidentInputQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: rtc-incidents-input-${sls:stage}
+        SqsManagedSseEnabled: true
+        MessageRetentionPeriod: 1209600
+        VisibilityTimeout: 360
+        RedrivePolicy:
+          deadLetterTargetArn: {'Fn::GetAtt': [IncidentInputDlq, Arn]}
+          maxReceiveCount: 5
+
+    IncidentEventFailureQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: rtc-incidents-event-delivery-failures-${sls:stage}
+        SqsManagedSseEnabled: true
+        MessageRetentionPeriod: 1209600
+
+    IncidentInputsRule:
+      Type: AWS::Events::Rule
+      Properties:
+        Name: rtc-incidents-input-${sls:stage}
+        EventBusName:
+          Fn::If:
+            - CreateSharedBus
+            - {Ref: EventBus}
+            - ${param:eventBusName, 'rtc-events-${sls:stage}'}
+        EventPattern:
+          source:
+            - network-telemetry
+            - customer-reports
+            - field-operations
+          detail-type:
+            - telemetry.status.changed
+            - telemetry.threshold.exceeded
+            - report.created
+            - report.status.changed
+            - work_order.assigned
+            - work_order.pending
+            - work_order.status.changed
+        Targets:
+          - Id: IncidentInputQueue
+            Arn: {'Fn::GetAtt': [IncidentInputQueue, Arn]}
+            RetryPolicy:
+              MaximumRetryAttempts: 10
+              MaximumEventAgeInSeconds: 86400
+            DeadLetterConfig:
+              Arn: {'Fn::GetAtt': [IncidentEventFailureQueue, Arn]}
+
+    IncidentQueuesPolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+          - {Ref: IncidentInputQueue}
+          - {Ref: IncidentEventFailureQueue}
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: events.amazonaws.com
+              Action: sqs:SendMessage
+              Resource:
+                - {'Fn::GetAtt': [IncidentInputQueue, Arn]}
+                - {'Fn::GetAtt': [IncidentEventFailureQueue, Arn]}
+              Condition:
+                ArnEquals:
+                  aws:SourceArn: {'Fn::GetAtt': [IncidentInputsRule, Arn]}
+
     # Conecta DynamoDB Streams con la Lambda: ArchiveTelemetryHistoryTableMapping.
     ArchiveTelemetryHistoryTableMapping:
       Type: AWS::Lambda::EventSourceMapping
@@ -410,3 +487,7 @@ resources:
   Outputs:
     EventBusName:
       Value: ${param:eventBusName, 'rtc-events-${sls:stage}'}
+    IncidentInputQueueUrl:
+      Value: {Ref: IncidentInputQueue}
+    IncidentInputQueueArn:
+      Value: {'Fn::GetAtt': [IncidentInputQueue, Arn]}
