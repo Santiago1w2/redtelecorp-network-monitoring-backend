@@ -1,0 +1,414 @@
+org: santiagomorales
+service: rtc-network-telemetry
+
+# 1. AWS, rol del laboratorio y variables compartidas por las Lambdas.
+provider:
+  name: aws
+  runtime: python3.12
+  architecture: x86_64
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+  memorySize: 256
+  timeout: 30
+  logRetentionInDays: 14
+  iam:
+    role: ${param:lambdaRoleArn, 'arn:aws:iam::369907334103:role/LabRole'}
+  environment:
+    FRONTEND_ORIGIN: ${param:frontendOrigin, env:FRONTEND_ORIGIN}
+    LATEST_TABLE: rtc-telemetry-latest-${sls:stage}
+    HISTORY_TABLE: rtc-telemetry-history-index-${sls:stage}
+    ALERTS_TABLE: rtc-telemetry-alerts-${sls:stage}
+    INGEST_QUEUE_URL: {Ref: IngestQueue}
+    INFRASTRUCTURE_API_URL: ${param:infrastructureApiUrl, ''}
+    MAX_BATCH: ${param:maxBatch, '100'}
+    HISTORY_BUCKET: {Ref: HistoryBucket}
+    EVENT_BUS_NAME: ${param:eventBusName, 'rtc-events-${sls:stage}'}
+
+# 2. CORS y autenticación comunes para no repetirlos en cada endpoint.
+custom:
+  cors:
+    origin: ${self:provider.environment.FRONTEND_ORIGIN}
+    headers:
+      - Content-Type
+      - Authorization
+      - Idempotency-Key
+  authorizer:
+    name: identityAuthorizer
+    arn: ${param:identityAuthorizerArn, env:IDENTITY_AUTHORIZER_ARN}
+    type: request
+    identitySource: method.request.header.Authorization
+    resultTtlInSeconds: 0
+    managedExternally: true
+
+# 3. Una Lambda por archivo; cada http indica su ruta y método.
+# lambda-proxy conserva el statusCode y body que devuelve el handler.
+functions:
+
+  # post_telemetry.py
+  postTelemetry:
+    name: rtc-network-telemetry-post-telemetry-${sls:stage}
+    handler: handlers.post_telemetry.lambda_handler
+    events:
+      - http:
+          path: /v1/telemetry
+          method: post
+          integration: lambda-proxy
+          cors: ${self:custom.cors}
+          authorizer: ${self:custom.authorizer}
+
+  # post_telemetry_batch.py
+  postTelemetryBatch:
+    name: rtc-network-telemetry-post-telemetry-batch-${sls:stage}
+    handler: handlers.post_telemetry_batch.lambda_handler
+    events:
+      - http:
+          path: /v1/telemetry/batch
+          method: post
+          integration: lambda-proxy
+          cors: ${self:custom.cors}
+          authorizer: ${self:custom.authorizer}
+
+  # get_antenna_latest.py
+  getAntennaLatest:
+    name: rtc-network-telemetry-get-antenna-latest-${sls:stage}
+    handler: handlers.get_antenna_latest.lambda_handler
+    events:
+      - http:
+          path: /v1/telemetry/antennas/{antennaId}/latest
+          method: get
+          integration: lambda-proxy
+          cors: ${self:custom.cors}
+          authorizer: ${self:custom.authorizer}
+
+  # get_antenna_history.py
+  getAntennaHistory:
+    name: rtc-network-telemetry-get-antenna-history-${sls:stage}
+    handler: handlers.get_antenna_history.lambda_handler
+    events:
+      - http:
+          path: /v1/telemetry/antennas/{antennaId}/history
+          method: get
+          integration: lambda-proxy
+          cors: ${self:custom.cors}
+          authorizer: ${self:custom.authorizer}
+
+  # get_antenna_summary.py
+  getAntennaSummary:
+    name: rtc-network-telemetry-get-antenna-summary-${sls:stage}
+    handler: handlers.get_antenna_summary.lambda_handler
+    events:
+      - http:
+          path: /v1/telemetry/antennas/{antennaId}/summary
+          method: get
+          integration: lambda-proxy
+          cors: ${self:custom.cors}
+          authorizer: ${self:custom.authorizer}
+
+  # get_telemetry_alerts.py
+  getTelemetryAlerts:
+    name: rtc-network-telemetry-get-telemetry-alerts-${sls:stage}
+    handler: handlers.get_telemetry_alerts.lambda_handler
+    events:
+      - http:
+          path: /v1/telemetry/alerts
+          method: get
+          integration: lambda-proxy
+          cors: ${self:custom.cors}
+          authorizer: ${self:custom.authorizer}
+
+  # process_telemetry.py
+  processTelemetry:
+    name: rtc-network-telemetry-process-telemetry-${sls:stage}
+    handler: handlers.process_telemetry.lambda_handler
+    events:
+      - sqs:
+          arn: {'Fn::GetAtt': [IngestQueue, Arn]}
+          batchSize: 10
+          maximumBatchingWindow: 2
+          functionResponseType: ReportBatchItemFailures
+
+  # archive_telemetry.py
+  archiveTelemetry:
+    name: rtc-network-telemetry-archive-telemetry-${sls:stage}
+    handler: handlers.archive_telemetry.lambda_handler
+
+  # publish_telemetry_alert.py
+  publishTelemetryAlert:
+    name: rtc-network-telemetry-publish-telemetry-alert-${sls:stage}
+    handler: handlers.publish_telemetry_alert.lambda_handler
+
+# 4. Archivos que se suben a Lambda.
+package:
+  patterns:
+    - '!**'
+    - handlers/*.py
+
+# 5. Recursos creados por CloudFormation, como en las prácticas.
+# Ref obtiene nombre/URL del recurso; Fn::GetAtt obtiene su ARN u otro atributo.
+resources:
+  # El Bash conserva este parámetro para proteger el bus compartido.
+  Parameters:
+    CreateEventBus:
+      Type: String
+      Default: ${param:createEventBus, 'false'}
+      AllowedValues:
+        - 'true'
+        - 'false'
+  Conditions:
+    CreateSharedBus:
+      Fn::Equals:
+        - {Ref: CreateEventBus}
+        - 'true'
+  Resources:
+
+    # Tabla DynamoDB: LatestTable.
+    LatestTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:provider.environment.LATEST_TABLE}
+        AttributeDefinitions:
+          - AttributeName: antenna_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: antenna_id
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST
+        SSESpecification:
+          SSEEnabled: true
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
+
+    # Tabla DynamoDB: HistoryTable.
+    HistoryTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:provider.environment.HISTORY_TABLE}
+        AttributeDefinitions:
+          - AttributeName: antenna_id
+            AttributeType: S
+          - AttributeName: measurement_key
+            AttributeType: S
+        KeySchema:
+          - AttributeName: antenna_id
+            KeyType: HASH
+          - AttributeName: measurement_key
+            KeyType: RANGE
+        BillingMode: PAY_PER_REQUEST
+        SSESpecification:
+          SSEEnabled: true
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+
+    # Tabla DynamoDB: AlertsTable.
+    AlertsTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:provider.environment.ALERTS_TABLE}
+        AttributeDefinitions:
+          - AttributeName: alert_timestamp_id
+            AttributeType: S
+          - AttributeName: antenna_id
+            AttributeType: S
+          - AttributeName: feed
+            AttributeType: S
+          - AttributeName: status
+            AttributeType: S
+        KeySchema:
+          - AttributeName: antenna_id
+            KeyType: HASH
+          - AttributeName: alert_timestamp_id
+            KeyType: RANGE
+        BillingMode: PAY_PER_REQUEST
+        SSESpecification:
+          SSEEnabled: true
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
+        GlobalSecondaryIndexes:
+          - IndexName: status-date
+            KeySchema:
+              - AttributeName: status
+                KeyType: HASH
+              - AttributeName: alert_timestamp_id
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+          - IndexName: feed-date
+            KeySchema:
+              - AttributeName: feed
+                KeyType: HASH
+              - AttributeName: alert_timestamp_id
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+
+    # Bucket S3: HistoryBucket.
+    HistoryBucket:
+      Type: AWS::S3::Bucket
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        BucketName:
+          Fn::Sub: rtc-telemetry-history-${AWS::AccountId}-${AWS::Region}-${sls:stage}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          IgnorePublicAcls: true
+          BlockPublicPolicy: true
+          RestrictPublicBuckets: true
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                SSEAlgorithm: AES256
+        VersioningConfiguration:
+          Status: Enabled
+        OwnershipControls:
+          Rules:
+            - ObjectOwnership: BucketOwnerEnforced
+
+    HistoryBucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket: {Ref: HistoryBucket}
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Deny
+              Principal: '*'
+              Action: s3:*
+              Resource:
+                - {'Fn::GetAtt': [HistoryBucket, Arn]}
+                - Fn::Sub: ${HistoryBucket.Arn}/*
+              Condition:
+                Bool:
+                  aws:SecureTransport: 'false'
+
+    # Cola SQS: StreamFailureQueue.
+    StreamFailureQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: rtc-network-telemetry-stream-failures-${sls:stage}
+        SqsManagedSseEnabled: true
+        MessageRetentionPeriod: 1209600
+        VisibilityTimeout: 360
+
+    # Cola SQS: IngestDlq.
+    IngestDlq:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: rtc-telemetry-ingest-dlq-${sls:stage}
+        SqsManagedSseEnabled: true
+        MessageRetentionPeriod: 1209600
+        VisibilityTimeout: 360
+
+    # Cola SQS: IngestQueue.
+    IngestQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: rtc-telemetry-ingest-${sls:stage}
+        SqsManagedSseEnabled: true
+        MessageRetentionPeriod: 1209600
+        VisibilityTimeout: 360
+        RedrivePolicy:
+          deadLetterTargetArn: {'Fn::GetAtt': [IngestDlq, Arn]}
+          maxReceiveCount: 5
+
+    # Bus EventBridge: EventBus.
+    EventBus:
+      Type: AWS::Events::EventBus
+      Condition: CreateSharedBus
+      Properties:
+        Name: ${param:eventBusName, 'rtc-events-${sls:stage}'}
+
+    # Conecta DynamoDB Streams con la Lambda: ArchiveTelemetryHistoryTableMapping.
+    ArchiveTelemetryHistoryTableMapping:
+      Type: AWS::Lambda::EventSourceMapping
+      Properties:
+        FunctionName: {Ref: ArchiveTelemetryLambdaFunction}
+        EventSourceArn: {'Fn::GetAtt': [HistoryTable, StreamArn]}
+        StartingPosition: TRIM_HORIZON
+        BatchSize: 100
+        MaximumBatchingWindowInSeconds: 5
+        BisectBatchOnFunctionError: true
+        MaximumRetryAttempts: 10
+        MaximumRecordAgeInSeconds: 82800
+        DestinationConfig:
+          OnFailure:
+            Destination: {'Fn::GetAtt': [StreamFailureQueue, Arn]}
+
+    # Conecta DynamoDB Streams con la Lambda: PublishTelemetryAlertAlertsTableMapping.
+    PublishTelemetryAlertAlertsTableMapping:
+      Type: AWS::Lambda::EventSourceMapping
+      Properties:
+        FunctionName: {Ref: PublishTelemetryAlertLambdaFunction}
+        EventSourceArn: {'Fn::GetAtt': [AlertsTable, StreamArn]}
+        StartingPosition: TRIM_HORIZON
+        BatchSize: 100
+        MaximumBatchingWindowInSeconds: 5
+        BisectBatchOnFunctionError: true
+        MaximumRetryAttempts: 10
+        MaximumRecordAgeInSeconds: 82800
+        DestinationConfig:
+          OnFailure:
+            Destination: {'Fn::GetAtt': [StreamFailureQueue, Arn]}
+
+    # Alarma de errores o mensajes fallidos: ProcessTelemetryErrors.
+    ProcessTelemetryErrors:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Errores Lambda; conectar acciones operativas al desplegar
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+          - Name: FunctionName
+            Value: {Ref: ProcessTelemetryLambdaFunction}
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+
+    # Alarma de errores o mensajes fallidos: StreamFailureQueueAlarm.
+    StreamFailureQueueAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        Namespace: AWS/SQS
+        MetricName: ApproximateNumberOfMessagesVisible
+        Statistic: Maximum
+        Dimensions:
+          - Name: QueueName
+            Value: {'Fn::GetAtt': [StreamFailureQueue, QueueName]}
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+
+    # Alarma de errores o mensajes fallidos: IngestDlqAlarm.
+    IngestDlqAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        Namespace: AWS/SQS
+        MetricName: ApproximateNumberOfMessagesVisible
+        Statistic: Maximum
+        Dimensions:
+          - Name: QueueName
+            Value: {'Fn::GetAtt': [IngestDlq, QueueName]}
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+
+  Outputs:
+    EventBusName:
+      Value: ${param:eventBusName, 'rtc-events-${sls:stage}'}

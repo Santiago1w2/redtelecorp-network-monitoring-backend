@@ -1,1 +1,0 @@
-# redtelecorp-network-monitoring-backend

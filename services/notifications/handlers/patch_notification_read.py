@@ -1,0 +1,85 @@
+"""Lambda autocontenida: configuración, auxiliares y handler en este archivo."""
+import json
+import os
+import logging
+import boto3
+import re
+from datetime import datetime, timezone
+logger = logging.getLogger(__name__)
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table(os.environ.get('NOTIFICATIONS_TABLE', 'rtc-notifications-dev'))
+HEADERS = {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': os.environ.get('FRONTEND_ORIGIN', 'https://localhost'), 'Vary': 'Origin', 'Cache-Control': 'no-store'}
+
+def owned_notification(table, notification_id, user):
+    from boto3.dynamodb.conditions import Key
+    result = table.query(IndexName='notification-id', KeyConditionExpression=Key('notification_id').eq(notification_id), Limit=1)
+    items = result.get('Items', [])
+    if not items or items[0]['recipient_id'] != user:
+        raise LookupError('Notificación no encontrada')
+    key = {k: items[0][k] for k in ('recipient_id', 'notification_key')}
+    item = table.get_item(Key=key, ConsistentRead=True).get('Item')
+    if not item or item['recipient_id'] != user:
+        raise LookupError('Notificación no encontrada')
+    return item
+
+def identifier(value):
+    if not isinstance(value, str) or not re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}', value):
+        raise ValueError('Identificador inválido')
+    return value
+
+def path(event, name):
+    return identifier((event.get('pathParameters') or {}).get(name))
+
+def now():
+    return datetime.now(timezone.utc).isoformat(timespec='microseconds').replace('+00:00', 'Z')
+
+def lambda_handler(event, context):
+    try:
+        authorizer = event.get('requestContext', {}).get('authorizer', {})
+        claims = authorizer.get('jwt', {}).get('claims', authorizer.get('claims', authorizer))
+        user = claims.get('sub')
+        if not user:
+            return {
+                'statusCode': 401,
+                'headers': HEADERS,
+                'body': json.dumps({'message': 'Autenticación requerida'}, default=str),
+            }
+        item = owned_notification(table, path(event, 'notificationId'), user)
+        result = table.update_item(Key={'recipient_id': user, 'notification_key': item['notification_key']}, UpdateExpression='SET #read = :yes, read_at = :now', ConditionExpression='attribute_exists(notification_key)', ExpressionAttributeNames={'#read': 'read'}, ExpressionAttributeValues={':yes': True, ':now': now()}, ReturnValues='ALL_NEW')
+        result = result['Attributes']
+        if len(json.dumps(result, default=str).encode('utf-8')) > 5000000:
+            return {
+                'statusCode': 413,
+                'headers': HEADERS,
+                'body': json.dumps({'message': 'Respuesta demasiado grande; reduzca limit o el intervalo'}, default=str),
+            }
+        return {
+            'statusCode': 200,
+            'headers': HEADERS,
+            'body': json.dumps(result, default=str),
+        }
+    except (KeyError, TypeError) as exc:
+        return {
+            'statusCode': 400,
+            'headers': HEADERS,
+            'body': json.dumps({'message': 'Entrada inválida'}, default=str),
+        }
+    except ValueError as exc:
+        return {
+            'statusCode': 400,
+            'headers': HEADERS,
+            'body': json.dumps({'message': str(exc)}, default=str),
+        }
+    except LookupError as exc:
+        return {
+            'statusCode': 404,
+            'headers': HEADERS,
+            'body': json.dumps({'message': str(exc)}, default=str),
+        }
+    except Exception as exc:
+        logger.error('operation_failed type=%s', type(exc).__name__)
+        return {
+            'statusCode': 503,
+            'headers': HEADERS,
+            'body': json.dumps({'message': 'Dependencia temporalmente no disponible'}, default=str),
+        }

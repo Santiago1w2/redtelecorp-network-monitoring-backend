@@ -1,0 +1,4 @@
+# Solo las tres APIs de services y las reglas de Git se versionan.
+/*
+!/.gitignore
+!/services/

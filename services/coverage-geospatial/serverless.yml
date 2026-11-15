@@ -1,0 +1,389 @@
+org: santiagomorales
+service: rtc-coverage-geospatial
+
+# 1. AWS, rol del laboratorio y variables compartidas por las Lambdas.
+provider:
+  name: aws
+  runtime: python3.12
+  architecture: x86_64
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+  memorySize: 256
+  timeout: 30
+  logRetentionInDays: 14
+  iam:
+    role: ${param:lambdaRoleArn, 'arn:aws:iam::369907334103:role/LabRole'}
+  environment:
+    FRONTEND_ORIGIN: ${param:frontendOrigin, env:FRONTEND_ORIGIN}
+    COVERAGE_TABLE: rtc-coverage-${sls:stage}
+    ZONES_TABLE: rtc-geozones-${sls:stage}
+    SPATIAL_INDEX_TABLE: rtc-spatial-index-${sls:stage}
+    GEOSPATIAL_BUCKET: {Ref: GeospatialBucket}
+    INFRASTRUCTURE_API_URL: ${param:infrastructureApiUrl, ''}
+    ORACLE_ENABLED: ${param:oracleEnabled, 'false'}
+    ORACLE_SECRET_ARN: ${param:oracleSecretArn, ''}
+    EVENT_BUS_NAME: ${param:eventBusName, 'rtc-events-${sls:stage}'}
+
+# 2. CORS y autenticación comunes para no repetirlos en cada endpoint.
+custom:
+  cors:
+    origin: ${self:provider.environment.FRONTEND_ORIGIN}
+    headers:
+      - Content-Type
+      - Authorization
+      - Idempotency-Key
+  authorizer:
+    name: identityAuthorizer
+    arn: ${param:identityAuthorizerArn, env:IDENTITY_AUTHORIZER_ARN}
+    type: request
+    identitySource: method.request.header.Authorization
+    resultTtlInSeconds: 0
+    managedExternally: true
+
+# 3. Una Lambda por archivo; cada http indica su ruta y método.
+# lambda-proxy conserva el statusCode y body que devuelve el handler.
+functions:
+
+  # get_coverage_antennas.py
+  getCoverageAntennas:
+    name: rtc-coverage-geospatial-get-coverage-antennas-${sls:stage}
+    handler: handlers.get_coverage_antennas.lambda_handler
+    events:
+      - http:
+          path: /v1/coverage/antennas
+          method: get
+          integration: lambda-proxy
+          cors: ${self:custom.cors}
+          authorizer: ${self:custom.authorizer}
+
+  # get_zones.py
+  getZones:
+    name: rtc-coverage-geospatial-get-zones-${sls:stage}
+    handler: handlers.get_zones.lambda_handler
+    events:
+      - http:
+          path: /v1/coverage/zones
+          method: get
+          integration: lambda-proxy
+          cors: ${self:custom.cors}
+          authorizer: ${self:custom.authorizer}
+
+  # get_antenna_coverage.py
+  getAntennaCoverage:
+    name: rtc-coverage-geospatial-get-antenna-coverage-${sls:stage}
+    handler: handlers.get_antenna_coverage.lambda_handler
+    events:
+      - http:
+          path: /v1/coverage/antennas/{antennaId}
+          method: get
+          integration: lambda-proxy
+          cors: ${self:custom.cors}
+          authorizer: ${self:custom.authorizer}
+
+  # get_zone.py
+  getZone:
+    name: rtc-coverage-geospatial-get-zone-${sls:stage}
+    handler: handlers.get_zone.lambda_handler
+    events:
+      - http:
+          path: /v1/coverage/zones/{zoneId}
+          method: get
+          integration: lambda-proxy
+          cors: ${self:custom.cors}
+          authorizer: ${self:custom.authorizer}
+
+  # put_antenna_coverage.py
+  putAntennaCoverage:
+    name: rtc-coverage-geospatial-put-antenna-coverage-${sls:stage}
+    handler: handlers.put_antenna_coverage.lambda_handler
+    events:
+      - http:
+          path: /v1/coverage/antennas/{antennaId}
+          method: put
+          integration: lambda-proxy
+          cors: ${self:custom.cors}
+          authorizer: ${self:custom.authorizer}
+
+  # post_zone.py
+  postZone:
+    name: rtc-coverage-geospatial-post-zone-${sls:stage}
+    handler: handlers.post_zone.lambda_handler
+    events:
+      - http:
+          path: /v1/coverage/zones
+          method: post
+          integration: lambda-proxy
+          cors: ${self:custom.cors}
+          authorizer: ${self:custom.authorizer}
+
+  # post_impact_analysis.py
+  postImpactAnalysis:
+    name: rtc-coverage-geospatial-post-impact-analysis-${sls:stage}
+    handler: handlers.post_impact_analysis.lambda_handler
+    events:
+      - http:
+          path: /v1/coverage/impact-analysis
+          method: post
+          integration: lambda-proxy
+          cors: ${self:custom.cors}
+          authorizer: ${self:custom.authorizer}
+    memorySize: 512
+    timeout: 60
+
+  # sync_antenna_location.py
+  syncAntennaLocation:
+    name: rtc-coverage-geospatial-sync-antenna-location-${sls:stage}
+    handler: handlers.sync_antenna_location.lambda_handler
+
+  # refresh_geospatial_index.py
+  refreshGeospatialIndex:
+    name: rtc-coverage-geospatial-refresh-geospatial-index-${sls:stage}
+    handler: handlers.refresh_geospatial_index.lambda_handler
+
+# 4. Archivos que se suben a Lambda.
+package:
+  artifact: .package/coverage-geospatial.zip
+
+# 5. Recursos creados por CloudFormation, como en las prácticas.
+# Ref obtiene nombre/URL del recurso; Fn::GetAtt obtiene su ARN u otro atributo.
+resources:
+  Resources:
+
+    # Tabla DynamoDB: CoverageTable.
+    CoverageTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:provider.environment.COVERAGE_TABLE}
+        AttributeDefinitions:
+          - AttributeName: antenna_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: antenna_id
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST
+        SSESpecification:
+          SSEEnabled: true
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+
+    # Tabla DynamoDB: ZonesTable.
+    ZonesTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:provider.environment.ZONES_TABLE}
+        AttributeDefinitions:
+          - AttributeName: zone_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: zone_id
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST
+        SSESpecification:
+          SSEEnabled: true
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+
+    # Tabla DynamoDB: SpatialIndexTable.
+    SpatialIndexTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:provider.environment.SPATIAL_INDEX_TABLE}
+        AttributeDefinitions:
+          - AttributeName: cell
+            AttributeType: S
+          - AttributeName: entity_key
+            AttributeType: S
+        KeySchema:
+          - AttributeName: cell
+            KeyType: HASH
+          - AttributeName: entity_key
+            KeyType: RANGE
+        BillingMode: PAY_PER_REQUEST
+        SSESpecification:
+          SSEEnabled: true
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
+
+    # Bucket S3: GeospatialBucket.
+    GeospatialBucket:
+      Type: AWS::S3::Bucket
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        BucketName:
+          Fn::Sub: rtc-geospatial-${AWS::AccountId}-${AWS::Region}-${sls:stage}
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          IgnorePublicAcls: true
+          BlockPublicPolicy: true
+          RestrictPublicBuckets: true
+        BucketEncryption:
+          ServerSideEncryptionConfiguration:
+            - ServerSideEncryptionByDefault:
+                SSEAlgorithm: AES256
+        VersioningConfiguration:
+          Status: Enabled
+        OwnershipControls:
+          Rules:
+            - ObjectOwnership: BucketOwnerEnforced
+
+    GeospatialBucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        Bucket: {Ref: GeospatialBucket}
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Deny
+              Principal: '*'
+              Action: s3:*
+              Resource:
+                - {'Fn::GetAtt': [GeospatialBucket, Arn]}
+                - Fn::Sub: ${GeospatialBucket.Arn}/*
+              Condition:
+                Bool:
+                  aws:SecureTransport: 'false'
+
+    # Cola SQS: StreamFailureQueue.
+    StreamFailureQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: rtc-coverage-geospatial-stream-failures-${sls:stage}
+        SqsManagedSseEnabled: true
+        MessageRetentionPeriod: 1209600
+        VisibilityTimeout: 360
+
+    # Regla de eventos: LocationRule.
+    LocationRule:
+      Type: AWS::Events::Rule
+      Properties:
+        Name: rtc-coverage-geospatial-locationrule-${sls:stage}
+        EventBusName: ${param:eventBusName, 'rtc-events-${sls:stage}'}
+        EventPattern:
+          source:
+            - network-infrastructure
+          detail-type:
+            - infrastructure.antenna.location.changed
+        Targets:
+          - Id: SyncAntennaLocation
+            Arn: {'Fn::GetAtt': [SyncAntennaLocationLambdaFunction, Arn]}
+            RetryPolicy:
+              MaximumRetryAttempts: 10
+              MaximumEventAgeInSeconds: 86400
+            DeadLetterConfig:
+              Arn: {'Fn::GetAtt': [StreamFailureQueue, Arn]}
+
+    LocationRulePermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        Action: lambda:InvokeFunction
+        FunctionName: {Ref: SyncAntennaLocationLambdaFunction}
+        Principal: events.amazonaws.com
+        SourceArn: {'Fn::GetAtt': [LocationRule, Arn]}
+
+    EventFailureQueuePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+          - {Ref: StreamFailureQueue}
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: events.amazonaws.com
+              Action: sqs:SendMessage
+              Resource: {'Fn::GetAtt': [StreamFailureQueue, Arn]}
+              Condition:
+                ArnEquals:
+                  aws:SourceArn: {'Fn::GetAtt': [LocationRule, Arn]}
+
+    SyncAntennaLocationAsync:
+      Type: AWS::Lambda::EventInvokeConfig
+      Properties:
+        FunctionName: {Ref: SyncAntennaLocationLambdaFunction}
+        Qualifier: $LATEST
+        MaximumRetryAttempts: 2
+        MaximumEventAgeInSeconds: 21600
+        DestinationConfig:
+          OnFailure:
+            Destination: {'Fn::GetAtt': [StreamFailureQueue, Arn]}
+
+    # Conecta DynamoDB Streams con la Lambda: RefreshGeospatialIndexCoverageTableMapping.
+    RefreshGeospatialIndexCoverageTableMapping:
+      Type: AWS::Lambda::EventSourceMapping
+      Properties:
+        FunctionName: {Ref: RefreshGeospatialIndexLambdaFunction}
+        EventSourceArn: {'Fn::GetAtt': [CoverageTable, StreamArn]}
+        StartingPosition: TRIM_HORIZON
+        BatchSize: 100
+        MaximumBatchingWindowInSeconds: 5
+        BisectBatchOnFunctionError: true
+        MaximumRetryAttempts: 10
+        MaximumRecordAgeInSeconds: 82800
+        DestinationConfig:
+          OnFailure:
+            Destination: {'Fn::GetAtt': [StreamFailureQueue, Arn]}
+
+    # Conecta DynamoDB Streams con la Lambda: RefreshGeospatialIndexZonesTableMapping.
+    RefreshGeospatialIndexZonesTableMapping:
+      Type: AWS::Lambda::EventSourceMapping
+      Properties:
+        FunctionName: {Ref: RefreshGeospatialIndexLambdaFunction}
+        EventSourceArn: {'Fn::GetAtt': [ZonesTable, StreamArn]}
+        StartingPosition: TRIM_HORIZON
+        BatchSize: 100
+        MaximumBatchingWindowInSeconds: 5
+        BisectBatchOnFunctionError: true
+        MaximumRetryAttempts: 10
+        MaximumRecordAgeInSeconds: 82800
+        DestinationConfig:
+          OnFailure:
+            Destination: {'Fn::GetAtt': [StreamFailureQueue, Arn]}
+
+    # Alarma de errores o mensajes fallidos: RefreshGeospatialIndexErrors.
+    RefreshGeospatialIndexErrors:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        AlarmDescription: Errores Lambda; conectar acciones operativas al desplegar
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+          - Name: FunctionName
+            Value: {Ref: RefreshGeospatialIndexLambdaFunction}
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+
+    # Alarma de errores o mensajes fallidos: StreamFailureQueueAlarm.
+    StreamFailureQueueAlarm:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        Namespace: AWS/SQS
+        MetricName: ApproximateNumberOfMessagesVisible
+        Statistic: Maximum
+        Dimensions:
+          - Name: QueueName
+            Value: {'Fn::GetAtt': [StreamFailureQueue, QueueName]}
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+
+  Outputs:
+    EventBusName:
+      Value: ${param:eventBusName, 'rtc-events-${sls:stage}'}
