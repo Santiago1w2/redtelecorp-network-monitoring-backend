@@ -19,7 +19,6 @@ provider:
     GCP_AI_SECRET_ARN: ${param:gcpAiSecretArn, ''}
     COVERAGE_API_URL: ${param:coverageApiUrl, ''}
     TELEMETRY_API_URL: ${param:telemetryApiUrl, ''}
-    REPORTS_API_URL: ${param:reportsApiUrl, ''}
     COLLECTIVE_REPORT_THRESHOLD: ${param:collectiveReportThreshold, '10'}
     REQUIRED_FIELD_SKILL: ${param:requiredFieldSkill, 'NETWORK'}
     INCIDENT_INPUT_QUEUE_URL:
@@ -27,6 +26,12 @@ provider:
     ORCHESTRATION_DLQ_URL:
       Ref: ReportesDLQ
     FRONTEND_ORIGIN: ${param:frontendOrigin}
+    GCP_AI_API_KEY_PARAM: ${param:gcpAiApiKeyParam, "/telecorp/${sls:stage}/gcp/ai-api-key"}
+    GCP_AUTH_MODE: ${param:gcpAuthMode, "WIF"}
+    GCP_WIF_AUDIENCE: ${param:gcpWifAudience, ""}
+    GCP_INVOKER_SERVICE_ACCOUNT: ${param:gcpInvokerServiceAccount, ""}
+    RECIPIENTS_TABLE: telecorp-incidents-service-recipients-${sls:stage}
+    LEGACY_REPORTS_API_URL: ${param:legacyReportsApiUrl, ""}
   iam:
     role: arn:aws:iam::573505212581:role/LabRole
   timeout: 30
@@ -135,6 +140,64 @@ functions:
     timeout: 120
   orchestrationFailure:
     handler: src/handlers/orchestrationFailure.handler
+  listarReportesUsuario:
+    handler: src/handlers/listarReportesUsuario.handler
+    timeout: 30
+    events:
+    - http:
+        path: incidencias/usuario/{userId}
+        method: get
+        cors:
+          origin: ${param:frontendOrigin}
+          headers:
+          - Content-Type
+          - Authorization
+        authorizer:
+          name: TeleCorpAuthorizer
+          type: COGNITO_USER_POOLS
+          arn: ${param:cognitoUserPoolArn, ssm:/telecorp/${sls:stage}/cognito/user-pool-arn}
+  listarReportesZona:
+    handler: src/handlers/listarReportesZona.handler
+    timeout: 30
+    events:
+    - http:
+        path: incidencias/zona/{zona}
+        method: get
+        cors:
+          origin: ${param:frontendOrigin}
+          headers:
+          - Content-Type
+          - Authorization
+        authorizer:
+          name: TeleCorpAuthorizer
+          type: COGNITO_USER_POOLS
+          arn: ${param:cognitoUserPoolArn, ssm:/telecorp/${sls:stage}/cognito/user-pool-arn}
+  chatSoporte:
+    handler: src/handlers/chatSoporte.handler
+    timeout: 30
+    events:
+    - http:
+        path: soporte/chat
+        method: post
+        cors:
+          origin: ${param:frontendOrigin}
+          headers:
+          - Content-Type
+          - Authorization
+        authorizer:
+          name: TeleCorpAuthorizer
+          type: COGNITO_USER_POOLS
+          arn: ${param:cognitoUserPoolArn, ssm:/telecorp/${sls:stage}/cognito/user-pool-arn}
+  listarDestinatariosIncidente:
+    handler: src/handlers/listarDestinatariosIncidente.handler
+    events:
+    - http:
+        path: v1/reports/incidents/{id}/recipients
+        method: get
+        authorizer: aws_iam
+  procesarEventoOrdenTrabajo:
+    handler: src/handlers/procesarEventoOrdenTrabajo.handler
+    events: []
 stepFunctions:
   stateMachines:
     OrquestadorIncidentesStateMachine:
@@ -178,8 +241,8 @@ stepFunctions:
             Catch:
             - ErrorEquals:
               - States.ALL
-              ResultPath: $.failure
-              Next: RegistrarFallo
+              ResultPath: $.diagnosticoError
+              Next: DiagnosticoFallback
           GuardarIncidenteColectivo:
             Type: Task
             Resource:
@@ -241,6 +304,16 @@ stepFunctions:
               IntervalSeconds: 5
               MaxAttempts: 5
               BackoffRate: 2.0
+          DiagnosticoFallback:
+            Type: Pass
+            Result:
+              causa_raiz_probable: Diagnostico automatico no disponible; requiere verificacion operativa.
+              riesgo_estructural: MEDIO
+              requiere_cuadrilla_campo: true
+              mensaje_notificacion_usuario: Nuestro equipo esta evaluando una incidencia en tu zona.
+              analysis_method: RULES_AI_UNAVAILABLE
+            ResultPath: $.diagnosticoIA
+            Next: GuardarIncidenteColectivo
 resources:
   Resources:
     ReportesTable:
@@ -256,6 +329,8 @@ resources:
         - AttributeName: createdAt
           AttributeType: S
         - AttributeName: userId
+          AttributeType: S
+        - AttributeName: incidenteColectivoId
           AttributeType: S
         KeySchema:
         - AttributeName: reporteId
@@ -277,6 +352,18 @@ resources:
             KeyType: RANGE
           Projection:
             ProjectionType: ALL
+        - IndexName: IncidentReportesIndex
+          KeySchema:
+          - AttributeName: incidenteColectivoId
+            KeyType: HASH
+          - AttributeName: createdAt
+            KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        SSESpecification:
+          SSEEnabled: true
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
       DeletionPolicy: Retain
       UpdateReplacePolicy: Retain
     IncidentesColectivosTable:
@@ -303,6 +390,10 @@ resources:
             KeyType: RANGE
           Projection:
             ProjectionType: ALL
+        SSESpecification:
+          SSEEnabled: true
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
       DeletionPolicy: Retain
       UpdateReplacePolicy: Retain
     HistorialTable:
@@ -320,6 +411,10 @@ resources:
           KeyType: HASH
         - AttributeName: timestamp
           KeyType: RANGE
+        SSESpecification:
+          SSEEnabled: true
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
       DeletionPolicy: Retain
       UpdateReplacePolicy: Retain
     ReportesDLQ:
@@ -456,6 +551,57 @@ resources:
         BatchSize: 1
         FunctionResponseTypes:
         - ReportBatchItemFailures
+    IncidentRecipientsTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: telecorp-incidents-service-recipients-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+        - AttributeName: incident_id
+          AttributeType: S
+        - AttributeName: recipient_id
+          AttributeType: S
+        KeySchema:
+        - AttributeName: incident_id
+          KeyType: HASH
+        - AttributeName: recipient_id
+          KeyType: RANGE
+        SSESpecification:
+          SSEEnabled: true
+        PointInTimeRecoverySpecification:
+          PointInTimeRecoveryEnabled: true
+    WorkerErrors:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: ProcesarReporteWorkerLambdaFunction
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
+    OutboxErrors:
+      Type: AWS::CloudWatch::Alarm
+      Properties:
+        Namespace: AWS/Lambda
+        MetricName: Errors
+        Dimensions:
+        - Name: FunctionName
+          Value:
+            Ref: PublishIntegrationEventLambdaFunction
+        Statistic: Sum
+        Period: 300
+        EvaluationPeriods: 1
+        Threshold: 1
+        ComparisonOperator: GreaterThanOrEqualToThreshold
+        TreatMissingData: notBreaching
 package:
   patterns:
   - '!**'

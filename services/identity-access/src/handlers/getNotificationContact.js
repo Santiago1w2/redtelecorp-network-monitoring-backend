@@ -20,7 +20,7 @@ exports.handler = async (event) => {
     if (attributes.sub !== userId) return { statusCode: 404, body: JSON.stringify({ message: 'Usuario no encontrado' }) };
     const result = { user_id: userId, active: user.Enabled === true && user.UserStatus === 'CONFIRMED' };
     if (attributes.email_verified === 'true') result.email = attributes.email;
-    if (attributes.phone_number_verified === 'true') result.phone = attributes.phone_number;
+    if (attributes.phone_number_verified === 'true') result.phone_e164 = attributes.phone_number;
     return { statusCode: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }, body: JSON.stringify(result) };
   } catch (error) {
     if (error.name === 'UserNotFoundException') return { statusCode: 404, body: JSON.stringify({ message: 'Usuario no encontrado' }) };

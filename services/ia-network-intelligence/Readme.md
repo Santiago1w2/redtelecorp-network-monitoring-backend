@@ -1,32 +1,20 @@
-# Red TeleCorp — MS6: AI Network Intelligence
+# Network Intelligence 06 ? Google Cloud Run + Vertex AI
 
-Microservicio de Inteligencia Artificial desplegado en **Google Cloud Run** con **Vertex AI (`gemini-3.5-flash-lite`)** para la plataforma híbrida de telecomunicaciones Red TeleCorp.
+Servicio privado invocado por 05. `/api/v1/ai/prioritize`, `/api/v1/ai/diagnose-incident` y `/api/v1/ai/chat` requieren `x-api-key`. El frontend usa `/soporte/chat` de 05 con Cognito; no llama directamente a este servicio.
 
-## Endpoints
-
-| Método | Ruta | Auth (`x-api-key`) | Descripción |
-| :--- | :--- | :---: | :--- |
-| `GET` | `/` | No | Health check del servicio y estado multimodal. |
-| `POST` | `/api/v1/ai/prioritize` | Sí | Triaje de reportes individuales (texto e imagen Base64) y detección de infraestructura crítica. |
-| `POST` | `/api/v1/ai/diagnose-incident` | Sí | Correlación masiva de reportes zonales y métricas de antenas para diagnóstico de causa raíz. |
-| `POST` | `/api/v1/ai/chat` | No | Asistente virtual público de soporte técnico y recolección de datos de incidencia. |
-
-## Variables de Entorno
-
-- `API_SECRET_TOKEN`: Token interno de autenticación entre microservicios (obligatorio; mismo valor protegido que el secreto AWS de 05).
-- `GCP_PROJECT`: ID del proyecto en Google Cloud (`red-telecorp`).
-- `GCP_LOCATION`: Región del endpoint de Vertex AI (`global`).
-- `MODEL_ID`: Modelo generativo utilizado (`gemini-3.5-flash-lite`).
-
-## Despliegue en Google Cloud Run
+Configurar valores reales de `GCP_PROJECT`, `GCP_LOCATION` y `MODEL_ID`. `API_SECRET_TOKEN` se inyecta desde Google Secret Manager; sin clave responde 503, y un valor incorrecto responde 401. No se incluyen claves ni nombres supuestos de modelos/proyectos.
 
 ```bash
-gcloud run deploy ms6-ai-intelligence \
-  --source . \
-  --region us-central1 \
-  --allow-unauthenticated \
-  --set-secrets API_SECRET_TOKEN=NOMBRE_SECRETO_GCP:1 \
-  --set-env-vars GCP_PROJECT="ID_REAL_DEL_PROYECTO",GCP_LOCATION="global"
+gcloud run deploy redtelecorp-ai \
+  --project "$GCP_PROJECT" --region "$GCP_REGION" \
+  --source . --service-account "$AI_RUNTIME_SERVICE_ACCOUNT" \
+  --no-allow-unauthenticated \
+  --set-env-vars "GCP_PROJECT=$GCP_PROJECT,GCP_LOCATION=$VERTEX_LOCATION,MODEL_ID=$MODEL_ID" \
+  --set-secrets "API_SECRET_TOKEN=$GCP_SECRET_NAME:$GCP_SECRET_VERSION"
 ```
 
-Reemplazar el proyecto, el secreto y su versión por recursos reales. La cuenta de servicio de Cloud Run necesita acceso a Vertex AI y `roles/secretmanager.secretAccessor` sobre ese secreto. 05 envía el mismo valor mediante `x-api-key`, leído de AWS Secrets Manager; no guardarlo en Git. Sin `API_SECRET_TOKEN`, las rutas internas de IA responden 503. [Configuración oficial de secretos](https://docs.cloud.google.com/run/docs/configuring/services/secrets).
+Crear los recursos antes de ejecutar ese comando en la cuenta autorizada. La cuenta de ejecuci?n necesita acceso al modelo Vertex AI y `roles/secretmanager.secretAccessor` sobre el secreto. La cuenta invocadora usa `roles/run.invoker`; el proveedor WIF debe admitir ?nicamente la cuenta AWS 573505212581 y LabRole. 05 obtiene un ID token para Cloud Run y env?a tambi?n la clave, le?da de AWS SSM SecureString por defecto.
+
+Consultar `../incidents-report/README.md` para el despliegue integrado. [Cloud Run privado](https://docs.cloud.google.com/run/docs/authenticating/service-to-service), [WIF AWS](https://docs.cloud.google.com/iam/docs/workload-identity-federation-with-other-clouds), [secretos Cloud Run](https://docs.cloud.google.com/run/docs/configuring/services/secrets).
+
+La comprobaci?n local usa proveedores simulados. Falta configurar y verificar el proyecto/modelo, WIF, cuentas y servicio reales; no se afirma que est?n desplegados.

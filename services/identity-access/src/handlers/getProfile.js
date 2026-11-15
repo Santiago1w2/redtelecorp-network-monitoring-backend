@@ -11,7 +11,7 @@ exports.handler = async (event) => {
     if (!userId) {
       return {
         statusCode: 401,
-        headers: { "Access-Control-Allow-Origin": "*" },
+        headers: { "Access-Control-Allow-Origin": process.env.FRONTEND_ORIGIN || "" },
         body: JSON.stringify({ message: "Token inválido o sin identificador de usuario" }),
       };
     }
@@ -27,7 +27,7 @@ exports.handler = async (event) => {
 
     return {
       statusCode: 200,
-      headers: { "Access-Control-Allow-Origin": "*" },
+      headers: { "Access-Control-Allow-Origin": process.env.FRONTEND_ORIGIN || "" },
       body: JSON.stringify({
         user: result.Item || {
           userId,
@@ -39,11 +39,11 @@ exports.handler = async (event) => {
       }),
     };
   } catch (error) {
-    console.error("Error obteniendo perfil:", error);
+    console.error("identity_profile_failed", error.name);
     return {
       statusCode: 500,
-      headers: { "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({ message: "Error interno del servidor", error: error.message }),
+      headers: { "Access-Control-Allow-Origin": process.env.FRONTEND_ORIGIN || "" },
+      body: JSON.stringify({ message: "Error interno del servidor" }),
     };
   }
 };

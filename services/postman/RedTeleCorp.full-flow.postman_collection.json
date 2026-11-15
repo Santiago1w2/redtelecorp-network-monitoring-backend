@@ -3,7 +3,7 @@
     "name": "Red TeleCorp - primera prueba completa",
     "_postman_id": "c0793881-fc39-4ec3-8a0e-85557a7e0a08",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "Usar un IdToken de admin confirmado. Ejecutar por etapas y esperar SQS/Streams/Step Functions en 08,11,13,17,19. No confundir HTTP 202 con procesamiento terminado. Solo datos ficticios e IN_APP."
+    "description": "Usar un IdToken de admin confirmado. Ejecutar por etapas y esperar SQS/Streams/Step Functions en 08,11,13,17,19. No confundir HTTP 202 con procesamiento terminado. Solo datos ficticios e IN_APP. Flujo can?nico: 05 recibe reportes; 07 no se despliega por defecto. Las m?tricas requieren ?zona=."
   },
   "auth": {
     "type": "bearer",
@@ -258,10 +258,10 @@
             "value": "application/json"
           }
         ],
-        "url": "{{reports_base_url}}/reports",
+        "url": "{{incidents_base_url}}/incidencias",
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"phone\": \"+51900000000\",\n  \"zoneId\": \"{{zone_id}}\",\n  \"occurredAt\": \"{{telemetry_timestamp}}\",\n  \"problemType\": \"NO_SIGNAL\",\n  \"description\": \"Reporte ficticio para validar integracion\"\n}"
+          "raw": "{\n  \"numeroServicio\": \"DEMO-001\",\n  \"zona\": \"{{zone_id}}\",\n  \"tipoProblema\": \"NO_SIGNAL\",\n  \"descripcion\": \"Reporte ficticio para validar integracion\"\n}"
         }
       },
       "event": [
@@ -270,8 +270,9 @@
           "script": {
             "type": "text/javascript",
             "exec": [
-              "pm.test(\"HTTP esperado\", () => pm.expect(pm.response.code).to.be.oneOf([201]));",
-              "const r=pm.response.json().report; pm.environment.set(\"report_id\",r.reportId); pm.environment.set(\"recipient_id\",r.userId);"
+              "pm.test(\"HTTP 202\",()=>pm.expect(pm.response.code).to.equal(202));",
+              "pm.environment.set(\"report_id\",pm.response.json().reporteId);",
+              "pm.environment.set(\"recipient_id\",pm.response.json().reporte.userId);"
             ]
           }
         }
@@ -473,7 +474,7 @@
             "value": "application/json"
           }
         ],
-        "url": "{{reports_base_url}}/reports/{{report_id}}"
+        "url": "{{incidents_base_url}}/incidencias/{{report_id}}"
       },
       "event": [
         {
@@ -481,8 +482,8 @@
           "script": {
             "type": "text/javascript",
             "exec": [
-              "pm.test(\"HTTP esperado\", () => pm.expect(pm.response.code).to.be.oneOf([200]));",
-              "pm.test(\"Reporte RESOLVED\",()=>pm.expect(pm.response.json().report.status).to.equal(\"RESOLVED\"));"
+              "pm.test(\"HTTP 200\",()=>pm.expect(pm.response.code).to.equal(200));",
+              "pm.test(\"Reporte SOLUCIONADA\",()=>pm.expect(pm.response.json().detalle.estado).to.equal(\"SOLUCIONADA\"));"
             ]
           }
         }

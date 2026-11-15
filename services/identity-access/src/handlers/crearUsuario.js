@@ -28,7 +28,7 @@ exports.handler = async (event) => {
     if (!gruposCaller.includes("admin")) {
       return {
         statusCode: 403,
-        headers: { "Access-Control-Allow-Origin": "*" },
+        headers: { "Access-Control-Allow-Origin": process.env.FRONTEND_ORIGIN || "" },
         body: JSON.stringify({ message: "Acceso denegado: Se requiere rol admin" }),
       };
     }
@@ -38,7 +38,7 @@ exports.handler = async (event) => {
     if (!email || !password || !ROLES_VALIDOS.includes(role)) {
       return {
         statusCode: 400,
-        headers: { "Access-Control-Allow-Origin": "*" },
+        headers: { "Access-Control-Allow-Origin": process.env.FRONTEND_ORIGIN || "" },
         body: JSON.stringify({
           message: "Faltan campos obligatorios (email, password, role) o rol inválido",
           rolesPermitidos: ROLES_VALIDOS,
@@ -100,7 +100,7 @@ exports.handler = async (event) => {
 
     return {
       statusCode: 201,
-      headers: { "Access-Control-Allow-Origin": "*" },
+      headers: { "Access-Control-Allow-Origin": process.env.FRONTEND_ORIGIN || "" },
       body: JSON.stringify({
         message: "Usuario creado con contraseña temporal y asignado exitosamente",
         user: {
@@ -113,11 +113,11 @@ exports.handler = async (event) => {
       }),
     };
   } catch (error) {
-    console.error("Error creando usuario:", error);
+    console.error("identity_create_failed", error.name);
     return {
       statusCode: 500,
-      headers: { "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({ message: "Error al crear el usuario", error: error.message }),
+      headers: { "Access-Control-Allow-Origin": process.env.FRONTEND_ORIGIN || "" },
+      body: JSON.stringify({ message: "Error al crear el usuario" }),
     };
   }
 };

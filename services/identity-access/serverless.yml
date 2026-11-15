@@ -1,4 +1,3 @@
-# Configuracion del curso: proveedor, Lambdas, triggers y recursos.
 org: santiagomorales
 service: telecorp-identity-service
 provider:
@@ -9,6 +8,7 @@ provider:
   environment:
     USERS_TABLE: ${self:service}-users-${self:provider.stage}
     ADMIN_EMAILS: ${param:adminEmails, ssm:/telecorp/${self:provider.stage}/cognito/admin-emails}
+    FRONTEND_ORIGIN: ${param:frontendOrigin}
   iam:
     role: arn:aws:iam::573505212581:role/LabRole
 functions:
@@ -22,7 +22,11 @@ functions:
     - http:
         path: auth/perfil
         method: get
-        cors: true
+        cors:
+          origin: ${param:frontendOrigin}
+          headers:
+          - Content-Type
+          - Authorization
         authorizer:
           name: TeleCorpAuthorizer
           type: COGNITO_USER_POOLS
@@ -39,7 +43,11 @@ functions:
     - http:
         path: auth/usuarios
         method: post
-        cors: true
+        cors:
+          origin: ${param:frontendOrigin}
+          headers:
+          - Content-Type
+          - Authorization
         authorizer:
           name: TeleCorpAuthorizer
           type: COGNITO_USER_POOLS
@@ -56,7 +64,11 @@ functions:
     - http:
         path: auth/usuarios/rol
         method: put
-        cors: true
+        cors:
+          origin: ${param:frontendOrigin}
+          headers:
+          - Content-Type
+          - Authorization
         authorizer:
           name: TeleCorpAuthorizer
           type: COGNITO_USER_POOLS
@@ -64,8 +76,8 @@ functions:
             Fn::GetAtt:
             - TeleCorpUserPool
             - Arn
-  notificationContact:
-    handler: src/handlers/notificationContact.handler
+  getNotificationContact:
+    handler: src/handlers/getNotificationContact.handler
     environment:
       USER_POOL_ID:
         Ref: TeleCorpUserPool

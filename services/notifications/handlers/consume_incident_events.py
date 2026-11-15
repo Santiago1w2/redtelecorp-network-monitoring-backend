@@ -144,6 +144,8 @@ def lambda_handler(event, context):
         recipients = page['recipient_ids']
         if not isinstance(recipients, list) or len(recipients) > 100:
             raise ConnectionError('Contrato de destinatarios inválido')
+        if count == 0 and not recipients and not page.get('cursor'):
+            raise ConnectionError('Incident recipients are not visible yet; retrying')
         for user in recipients:
             identifier(user)
             targeted = data.get('recipient_ids')

@@ -1,6 +1,7 @@
 import os
 import json
 import base64
+import hmac
 from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -16,18 +17,27 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[origin.strip() for origin in os.environ.get("FRONTEND_ORIGIN", "").split(",") if origin.strip()],
+    allow_credentials=False,
+    allow_methods=["POST"],
+    allow_headers=["Content-Type", "Authorization", "x-api-key"],
 )
 
 API_SECRET_TOKEN = os.environ.get("API_SECRET_TOKEN", "")
-GCP_PROJECT = os.environ.get("GCP_PROJECT", "red-telecorp")
+GCP_PROJECT = os.environ.get("GCP_PROJECT", "")
 GCP_LOCATION = os.environ.get("GCP_LOCATION", "global")
-MODEL_ID = os.environ.get("MODEL_ID", "gemini-3.5-flash-lite")
+MODEL_ID = os.environ.get("MODEL_ID", "")
 
-client = genai.Client(vertexai=True, project=GCP_PROJECT, location=GCP_LOCATION)
+client = None
+
+
+def model_client():
+    global client
+    if not GCP_PROJECT or not MODEL_ID:
+        raise HTTPException(status_code=503, detail="Proyecto o modelo IA sin configurar")
+    if client is None:
+        client = genai.Client(vertexai=True, project=GCP_PROJECT, location=GCP_LOCATION)
+    return client
 
 
 class ReporteUsuario(BaseModel):
@@ -52,7 +62,7 @@ class ChatRequest(BaseModel):
 def verificar_token(x_api_key: str = Header(None)):
     if not API_SECRET_TOKEN:
         raise HTTPException(status_code=503, detail="Integracion IA sin configurar")
-    if x_api_key != API_SECRET_TOKEN:
+    if not isinstance(x_api_key, str) or not hmac.compare_digest(x_api_key, API_SECRET_TOKEN):
         raise HTTPException(status_code=401, detail="No autorizado")
 
 
@@ -98,14 +108,14 @@ def priorizar_reporte(data: ReporteUsuario, x_api_key: str = Header(None)):
                 )
             )
 
-        response = client.models.generate_content(
+        response = model_client().models.generate_content(
             model=MODEL_ID,
             contents=contenidos,
             config=types.GenerateContentConfig(response_mime_type="application/json")
         )
         return json.loads(response.text)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=503, detail="Proveedor IA temporalmente no disponible")
 
 
 @app.post("/api/v1/ai/diagnose-incident")
@@ -127,18 +137,19 @@ def diagnosticar_incidente(data: IncidenteColectivoRequest, x_api_key: str = Hea
           "mensaje_notificacion_usuario": "mensaje claro y empático para enviar por SMS/Email a los afectados"
         }}
         """
-        response = client.models.generate_content(
+        response = model_client().models.generate_content(
             model=MODEL_ID,
             contents=prompt,
             config=types.GenerateContentConfig(response_mime_type="application/json")
         )
         return json.loads(response.text)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=503, detail="Proveedor IA temporalmente no disponible")
 
 
 @app.post("/api/v1/ai/chat")
-def asistente_virtual(data: ChatRequest):
+def asistente_virtual(data: ChatRequest, x_api_key: str = Header(None)):
+    verificar_token(x_api_key)
     try:
         instruccion = """
         Eres el asistente virtual de soporte técnico de Red TeleCorp.
@@ -146,11 +157,11 @@ def asistente_virtual(data: ChatRequest):
         para registrar su incidencia: identificación, número de teléfono, ubicación/zona y descripción del problema.
         Sé amable, directo y conciso.
         """
-        response = client.models.generate_content(
+        response = model_client().models.generate_content(
             model=MODEL_ID,
             contents=data.mensaje,
             config=types.GenerateContentConfig(system_instruction=instruccion)
         )
         return {"respuesta": response.text}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=503, detail="Proveedor IA temporalmente no disponible")

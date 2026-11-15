@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Despliega los ocho Serverless AWS desde EC2. Google Cloud y Oracle se configuran aparte.
+# Despliega el flujo canónico AWS desde EC2; 07 es legado opcional.
 set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ACTION="${1:-check}"
@@ -18,17 +18,23 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 AI_ENABLED="${AI_ENABLED:-false}"
 ORACLE_ENABLED="${ORACLE_ENABLED:-false}"
 DELIVERY_ENABLED="${DELIVERY_ENABLED:-false}"
+DEPLOY_LEGACY_REPORTS="${DEPLOY_LEGACY_REPORTS:-false}"
+GCP_AUTH_MODE="${GCP_AUTH_MODE:-WIF}"
+GCP_AI_API_KEY_PARAM="${GCP_AI_API_KEY_PARAM:-/telecorp/$STAGE/gcp/ai-api-key}"
 EVENT_BUS_NAME="${EVENT_BUS_NAME:-rtc-events-$STAGE}"
 CREATE_EVENT_BUS="${CREATE_EVENT_BUS:-auto}"
 [[ "$STAGE" =~ ^[a-zA-Z0-9-]+$ ]] || fail 'STAGE invalido.'
 [[ "$AWS_REGION" == us-east-1 ]] || fail 'La configuración inicial está preparada para us-east-1; usa esa región en todos los servicios.'
 [[ "${FRONTEND_ORIGIN:-}" =~ ^https://[^/?\#[:space:]]+$ && "$FRONTEND_ORIGIN" != *REEMPLAZAR* ]] || fail 'Configura FRONTEND_ORIGIN con el origen HTTPS real.'
 [[ -n "${ADMIN_EMAILS:-}" && "$ADMIN_EMAILS" == *@* && "$ADMIN_EMAILS" != *REEMPLAZAR* ]] || fail 'Configura ADMIN_EMAILS con los correos administradores separados por coma.'
-for flag in "$AI_ENABLED" "$ORACLE_ENABLED" "$DELIVERY_ENABLED"; do
+for flag in "$AI_ENABLED" "$ORACLE_ENABLED" "$DELIVERY_ENABLED" "$DEPLOY_LEGACY_REPORTS"; do
   case "$flag" in true|false) ;; *) fail 'Los indicadores de integración admiten true/false.' ;; esac
 done
-[[ "$AI_ENABLED" != true || ( -n "${GCP_AI_BASE_URL:-}" && -n "${GCP_AI_SECRET_ARN:-}" ) ]] || fail 'IA requiere GCP_AI_BASE_URL y GCP_AI_SECRET_ARN.'
+[[ "$AI_ENABLED" != true || -n "${GCP_AI_BASE_URL:-}" ]] || fail 'IA requiere GCP_AI_BASE_URL y clave en SSM SecureString o Secrets Manager.'
+[[ "$GCP_AUTH_MODE" == WIF || "$GCP_AUTH_MODE" == API_KEY ]] || fail 'GCP_AUTH_MODE debe ser WIF o API_KEY.'
+[[ "$AI_ENABLED" != true || "$GCP_AUTH_MODE" != WIF || ( -n "${GCP_WIF_AUDIENCE:-}" && -n "${GCP_INVOKER_SERVICE_ACCOUNT:-}" ) ]] || fail 'Cloud Run privado requiere GCP_WIF_AUDIENCE y GCP_INVOKER_SERVICE_ACCOUNT.'
 [[ "$ORACLE_ENABLED" != true || -n "${ORACLE_SECRET_ARN:-}" ]] || fail 'Oracle requiere ORACLE_SECRET_ARN y red configurada.'
+[[ "$ORACLE_ENABLED" != true || ( -n "${ORACLE_SECURITY_GROUP_IDS:-}" && -n "${ORACLE_SUBNET_IDS:-}" ) ]] || fail 'Oracle requiere grupos de seguridad y subredes privadas con salida NAT; configurar ORACLE_SECURITY_GROUP_IDS y ORACLE_SUBNET_IDS.'
 [[ "$DELIVERY_ENABLED" != true || ( -n "${SES_FROM_ADDRESS:-}" && -n "${SES_IDENTITY:-}" ) ]] || fail 'La entrega externa requiere identidad SES verificada.'
 for tool in aws node npm "$SERVERLESS_BIN" "$PYTHON_BIN" uv; do need "$tool"; done
 export AWS_REGION AWS_DEFAULT_REGION="$AWS_REGION" AWS_PAGER='' AWS_CLI_AUTO_PROMPT=off
@@ -93,6 +99,7 @@ INFRASTRUCTURE_URL=''
 TELEMETRY_URL=''
 COVERAGE_URL=''
 REPORTS_URL=''
+LEGACY_REPORTS_URL=''
 
 endpoint() {
   local stack="$1" file="$OUT/$1.json"
@@ -116,12 +123,12 @@ run_service() (
     identity) directory="$ROOT_DIR/identity-access"; args+=("--param=adminEmails=$ADMIN_EMAILS") ;;
     infrastructure) directory="$ROOT_DIR/../MICROSERVICIO 2" ;;
     telemetry) directory="$ROOT_DIR/network-telemetry"; args+=("--param=createEventBus=$CREATE_EVENT_BUS"); [[ -z "$INFRASTRUCTURE_URL" ]] || args+=("--param=infrastructureApiUrl=$INFRASTRUCTURE_URL") ;;
-    coverage) directory="$ROOT_DIR/coverage-geospatial"; args+=("--param=oracleEnabled=$ORACLE_ENABLED"); [[ -z "$INFRASTRUCTURE_URL" ]] || args+=("--param=infrastructureApiUrl=$INFRASTRUCTURE_URL"); [[ -z "${ORACLE_SECRET_ARN:-}" ]] || args+=("--param=oracleSecretArn=$ORACLE_SECRET_ARN") ;;
+    coverage) directory="$ROOT_DIR/coverage-geospatial"; args+=("--param=oracleEnabled=$ORACLE_ENABLED" "--param=oracleSecurityGroupIds=${ORACLE_SECURITY_GROUP_IDS:-}" "--param=oracleSubnetIds=${ORACLE_SUBNET_IDS:-}"); [[ -z "$INFRASTRUCTURE_URL" ]] || args+=("--param=infrastructureApiUrl=$INFRASTRUCTURE_URL"); [[ -z "${ORACLE_SECRET_ARN:-}" ]] || args+=("--param=oracleSecretArn=$ORACLE_SECRET_ARN") ;;
     reports) directory="$ROOT_DIR/../MICROSERVICIO 7" ;;
     field) directory="$ROOT_DIR/../MICROSERVICIO 8" ;;
     notifications) directory="$ROOT_DIR/notifications"; args+=("--param=deliveryEnabled=$DELIVERY_ENABLED" "--param=sesIdentity=${SES_IDENTITY:-unconfigured.invalid}"); [[ -z "$IDENTITY_URL" ]] || args+=("--param=identityApiUrl=$IDENTITY_URL"); [[ -z "$REPORTS_URL" ]] || args+=("--param=reportsApiUrl=$REPORTS_URL"); [[ -z "${SES_FROM_ADDRESS:-}" ]] || args+=("--param=sesFromAddress=$SES_FROM_ADDRESS") ;;
-    incidents) directory="$ROOT_DIR/incidents-report"; args+=("--param=aiEnabled=$AI_ENABLED" "--param=collectiveReportThreshold=${COLLECTIVE_REPORT_THRESHOLD:-10}" "--param=requiredFieldSkill=${REQUIRED_FIELD_SKILL:-NETWORK}");
-      [[ -z "$COVERAGE_URL" ]] || args+=("--param=coverageApiUrl=$COVERAGE_URL"); [[ -z "$TELEMETRY_URL" ]] || args+=("--param=telemetryApiUrl=$TELEMETRY_URL"); [[ -z "$REPORTS_URL" ]] || args+=("--param=reportsApiUrl=$REPORTS_URL");
+    incidents) directory="$ROOT_DIR/incidents-report"; args+=("--param=aiEnabled=$AI_ENABLED" "--param=collectiveReportThreshold=${COLLECTIVE_REPORT_THRESHOLD:-10}" "--param=requiredFieldSkill=${REQUIRED_FIELD_SKILL:-NETWORK}" "--param=gcpAiApiKeyParam=$GCP_AI_API_KEY_PARAM" "--param=gcpAuthMode=$GCP_AUTH_MODE" "--param=gcpWifAudience=${GCP_WIF_AUDIENCE:-}" "--param=gcpInvokerServiceAccount=${GCP_INVOKER_SERVICE_ACCOUNT:-}");
+      [[ -z "$COVERAGE_URL" ]] || args+=("--param=coverageApiUrl=$COVERAGE_URL"); [[ -z "$TELEMETRY_URL" ]] || args+=("--param=telemetryApiUrl=$TELEMETRY_URL"); [[ -z "$LEGACY_REPORTS_URL" ]] || args+=("--param=legacyReportsApiUrl=$LEGACY_REPORTS_URL");
       [[ -z "${GCP_AI_BASE_URL:-}" ]] || args+=("--param=gcpAiBaseUrl=$GCP_AI_BASE_URL"); [[ -z "${GCP_AI_SECRET_ARN:-}" ]] || args+=("--param=gcpAiSecretArn=$GCP_AI_SECRET_ARN") ;;
     *) fail 'Servicio desconocido.' ;;
   esac
@@ -142,12 +149,14 @@ elif [[ "$ACTION" != check ]]; then
 else
   (cd -- "$ROOT_DIR/incidents-report" && npm ls --depth=0 > "$OUT/incidents-dependencies.txt")
 fi
-for selection in identity telemetry infrastructure reports field coverage notifications incidents; do
+SELECTIONS=(identity telemetry infrastructure field coverage incidents notifications)
+[[ "$DEPLOY_LEGACY_REPORTS" != true ]] || SELECTIONS+=(reports)
+for selection in "${SELECTIONS[@]}"; do
   run_service "$selection" print > "$OUT/$selection-validation.txt"
 done
-if [[ "$ACTION" == check ]]; then printf '\nOcho configuraciones resueltas. No se crearon stacks. IAM de ejecución y proveedores externos requieren comprobación real.\n'; exit 0; fi
+if [[ "$ACTION" == check ]]; then printf '\nConfiguraciones resueltas; 05 es canónico y 07 es legado opcional. No se crearon stacks. Verificar permisos y proveedores reales.\n'; exit 0; fi
 if [[ "$ACTION" == package ]]; then
-  for selection in identity telemetry infrastructure reports field coverage notifications incidents; do run_service "$selection" package; done
+  for selection in "${SELECTIONS[@]}"; do run_service "$selection" package; done
   printf '\nPaquetes de comprobación creados con IDs locales; deploy vuelve a construir con los IDs reales.\n'; exit 0
 fi
 
@@ -162,16 +171,19 @@ TELEMETRY_URL="$(endpoint "rtc-network-telemetry-$STAGE")"
 run_service infrastructure deploy
 INFRASTRUCTURE_URL="$(endpoint "redtelecorp-network-infrastructure-$STAGE")"
 run_service telemetry deploy
-run_service reports deploy
-REPORTS_URL="$(endpoint "redtelecorp-customer-reports-$STAGE")"
+if [[ "$DEPLOY_LEGACY_REPORTS" == true ]]; then
+  run_service reports deploy
+  LEGACY_REPORTS_URL="$(endpoint "redtelecorp-customer-reports-$STAGE")"
+fi
 run_service field deploy
 FIELD_URL="$(endpoint "redtelecorp-field-operations-$STAGE")"
 run_service coverage deploy
 COVERAGE_URL="$(endpoint "rtc-coverage-geospatial-$STAGE")"
-run_service notifications deploy
-NOTIFICATIONS_URL="$(endpoint "rtc-notifications-$STAGE")"
 run_service incidents deploy
 INCIDENTS_URL="$(endpoint "telecorp-incidents-service-$STAGE")"
+REPORTS_URL="$INCIDENTS_URL"
+run_service notifications deploy
+NOTIFICATIONS_URL="$(endpoint "rtc-notifications-$STAGE")"
 "$PYTHON_BIN" - "$ROOT_DIR/postman/RedTeleCorp.full-flow.environment.json" "$OUT/postman.environment.json" "$IDENTITY_URL" "$INFRASTRUCTURE_URL" "$TELEMETRY_URL" "$COVERAGE_URL" "$REPORTS_URL" "$FIELD_URL" "$INCIDENTS_URL" "$NOTIFICATIONS_URL" "$POOL_ID" "$CLIENT_ID" <<'PY'
 import json,sys
 source,target,*values=sys.argv[1:]

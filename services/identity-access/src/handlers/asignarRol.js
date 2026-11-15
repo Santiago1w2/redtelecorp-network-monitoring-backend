@@ -28,7 +28,7 @@ exports.handler = async (event) => {
     if (!gruposCaller.includes("admin")) {
       return {
         statusCode: 403,
-        headers: { "Access-Control-Allow-Origin": "*" },
+        headers: { "Access-Control-Allow-Origin": process.env.FRONTEND_ORIGIN || "" },
         body: JSON.stringify({ message: "Acceso denegado: Se requiere rol admin" }),
       };
     }
@@ -38,7 +38,7 @@ exports.handler = async (event) => {
     if (!userId || !email || !ROLES_VALIDOS.includes(nuevoRol)) {
       return {
         statusCode: 400,
-        headers: { "Access-Control-Allow-Origin": "*" },
+        headers: { "Access-Control-Allow-Origin": process.env.FRONTEND_ORIGIN || "" },
         body: JSON.stringify({
           message: "Parámetros inválidos",
           rolesPermitidos: ROLES_VALIDOS,
@@ -90,7 +90,7 @@ exports.handler = async (event) => {
 
     return {
       statusCode: 200,
-      headers: { "Access-Control-Allow-Origin": "*" },
+      headers: { "Access-Control-Allow-Origin": process.env.FRONTEND_ORIGIN || "" },
       body: JSON.stringify({
         message: `Rol actualizado exitosamente a ${nuevoRol}`,
         userId,
@@ -99,11 +99,11 @@ exports.handler = async (event) => {
       }),
     };
   } catch (error) {
-    console.error("Error asignando rol:", error);
+    console.error("identity_role_failed", error.name);
     return {
       statusCode: 500,
-      headers: { "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({ message: "Error interno al asignar rol", error: error.message }),
+      headers: { "Access-Control-Allow-Origin": process.env.FRONTEND_ORIGIN || "" },
+      body: JSON.stringify({ message: "Error interno al asignar rol" }),
     };
   }
 };
