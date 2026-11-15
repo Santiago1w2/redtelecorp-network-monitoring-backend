@@ -45,7 +45,6 @@ done
 [[ "$AI_ENABLED" != true || "$GCP_AUTH_MODE" != WIF || ( -n "${GCP_WIF_AUDIENCE:-}" && -n "${GCP_INVOKER_SERVICE_ACCOUNT:-}" ) ]] || fail 'Cloud Run privado requiere GCP_WIF_AUDIENCE y GCP_INVOKER_SERVICE_ACCOUNT.'
 [[ "$ORACLE_ENABLED" != true || -n "${ORACLE_SECRET_ARN:-}" ]] || fail 'Oracle requiere ORACLE_SECRET_ARN y red configurada.'
 [[ "$ORACLE_ENABLED" != true || ( -n "${ORACLE_SECURITY_GROUP_IDS:-}" && -n "${ORACLE_SUBNET_IDS:-}" ) ]] || fail 'Oracle requiere grupos de seguridad y subredes privadas con salida NAT; configurar ORACLE_SECURITY_GROUP_IDS y ORACLE_SUBNET_IDS.'
-[[ "$DELIVERY_ENABLED" != true || ( -n "${SES_FROM_ADDRESS:-}" && -n "${SES_IDENTITY:-}" ) ]] || fail 'La entrega externa requiere identidad SES verificada.'
 for tool in aws node npm "$SERVERLESS_BIN" "$PYTHON_BIN" uv; do need "$tool"; done
 export AWS_REGION AWS_DEFAULT_REGION="$AWS_REGION" AWS_PAGER='' AWS_CLI_AUTO_PROMPT=off
 AWS=(aws --region "$AWS_REGION")
@@ -139,7 +138,7 @@ run_service() (
       [[ -z "$INFRASTRUCTURE_URL" ]] || args+=("--param=infrastructureApiUrl=$INFRASTRUCTURE_URL"); [[ -z "${ORACLE_SECRET_ARN:-}" ]] || args+=("--param=oracleSecretArn=$ORACLE_SECRET_ARN") ;;
     reports) directory="$ROOT_DIR/../MICROSERVICIO 7" ;;
     field) directory="$ROOT_DIR/../MICROSERVICIO 8" ;;
-    notifications) directory="$ROOT_DIR/notifications"; args+=("--param=deliveryEnabled=$DELIVERY_ENABLED" "--param=sesIdentity=${SES_IDENTITY:-unconfigured.invalid}"); [[ -z "$IDENTITY_URL" ]] || args+=("--param=identityApiUrl=$IDENTITY_URL"); [[ -z "$REPORTS_URL" ]] || args+=("--param=reportsApiUrl=$REPORTS_URL"); [[ -z "${SES_FROM_ADDRESS:-}" ]] || args+=("--param=sesFromAddress=$SES_FROM_ADDRESS") ;;
+    notifications) directory="$ROOT_DIR/notifications"; args+=("--param=deliveryEnabled=$DELIVERY_ENABLED"); [[ -z "$IDENTITY_URL" ]] || args+=("--param=identityApiUrl=$IDENTITY_URL"); [[ -z "$REPORTS_URL" ]] || args+=("--param=reportsApiUrl=$REPORTS_URL") ;;
     incidents) directory="$ROOT_DIR/incidents-report"; args+=("--param=aiEnabled=$AI_ENABLED" "--param=collectiveReportThreshold=$COLLECTIVE_REPORT_THRESHOLD" "--param=recurrentAntennaMinEvents=$RECURRENT_ANTENNA_MIN_EVENTS" "--param=recurrentAntennaMinDays=$RECURRENT_ANTENNA_MIN_DAYS" "--param=recurrentAntennaWindowDays=$RECURRENT_ANTENNA_WINDOW_DAYS" "--param=requiredFieldSkill=${REQUIRED_FIELD_SKILL:-NETWORK}" "--param=gcpAiApiKeyParam=$GCP_AI_API_KEY_PARAM" "--param=gcpAuthMode=$GCP_AUTH_MODE");
       [[ -z "${GCP_WIF_AUDIENCE:-}" ]] || args+=("--param=gcpWifAudience=$GCP_WIF_AUDIENCE");
       [[ -z "${GCP_INVOKER_SERVICE_ACCOUNT:-}" ]] || args+=("--param=gcpInvokerServiceAccount=$GCP_INVOKER_SERVICE_ACCOUNT");

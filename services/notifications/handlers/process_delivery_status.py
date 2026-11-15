@@ -35,7 +35,7 @@ def event_envelope(event, source, types):
 
 def apply_status(data):
     channel, status = (data['channel'], data['status'])
-    if channel not in ('EMAIL', 'SMS') or status not in ('DELIVERED', 'BOUNCED', 'COMPLAINT', 'FAILED'):
+    if channel != 'EMAIL' or status not in ('DELIVERED', 'BOUNCED', 'COMPLAINT', 'FAILED'):
         raise ValueError('Estado de entrega inválido')
     date = timestamp(data['occurred_at'])
     page = table.query(IndexName='notification-id', KeyConditionExpression=Key('notification_id').eq(data['notification_id']), Limit=1)

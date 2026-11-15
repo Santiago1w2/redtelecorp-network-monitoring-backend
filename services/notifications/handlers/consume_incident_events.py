@@ -88,7 +88,7 @@ def validate(data):
     if data['template'] not in TEMPLATES:
         raise ValueError('Plantilla inválida')
     channels = data['channels']
-    if not isinstance(channels, list) or not channels or len(channels) > 3 or (len(set(channels)) != len(channels)) or set(channels) - {'EMAIL', 'SMS', 'IN_APP'}:
+    if not isinstance(channels, list) or not channels or len(channels) > 2 or (len(set(channels)) != len(channels)) or set(channels) - {'EMAIL', 'IN_APP'}:
         raise ValueError('Canales inválidos')
     variables = data.get('variables', {})
     if not isinstance(variables, dict) or set(variables) != {'zone_name', 'incident_status'} or any((not isinstance(v, str) or not 1 <= len(v) <= 200 for v in variables.values())):
@@ -101,7 +101,7 @@ def now():
 def decimalize(value):
     return json.loads(dumps(value), parse_float=Decimal)
 
-def create_notification(data, idempotency_key, occurred_at=None):
+def create_notification(data, idempotency_key, occurred_at=None, admin_copy=False):
     data = validate(data)
     digest = hashlib.sha256(dumps({**data, 'channels': sorted(data['channels']), 'variables': dict(sorted(data['variables'].items()))}).encode()).hexdigest()
     dedup = dynamodb.Table(IDEMPOTENCY)
@@ -113,7 +113,7 @@ def create_notification(data, idempotency_key, occurred_at=None):
     notification_id = str(uuid.uuid4())
     created = timestamp(occurred_at) if occurred_at else now()
     title, message = TEMPLATES[data['template']]
-    item = dict(data, notification_id=notification_id, notification_key=created + '#' + notification_id, created_at=created, title=title, message=message.format(**data['variables']), read=False, delivery_status={channel: {'status': 'PENDING', 'attempts': 0} for channel in data['channels']})
+    item = dict(data, admin_copy=admin_copy, notification_id=notification_id, notification_key=created + '#' + notification_id, created_at=created, title=title, message=message.format(**data['variables']), read=False, delivery_status={channel: {'status': 'PENDING', 'attempts': 0} for channel in data['channels']})
     entry = {'idempotency_key': idempotency_key, 'status': 'CREATED', 'created_at': created, 'notification_id': notification_id, 'payload_hash': digest, 'expires_at': int(time.time()) + 90 * 86400}
 
     def attrs(value):
@@ -131,37 +131,64 @@ def create_notification(data, idempotency_key, occurred_at=None):
         return existing['notification_id']
     return notification_id
 
+def administrator_ids():
+    pool = os.environ.get('COGNITO_USER_POOL_ARN', '').rsplit('/', 1)[-1]
+    if not pool:
+        raise ConnectionError('COGNITO_USER_POOL_ARN is required for administrator notifications')
+    cognito = boto3.client('cognito-idp')
+    users, token, tokens = set(), None, set()
+    while True:
+        args = dict(UserPoolId=pool, GroupName='admin', Limit=60)
+        if token:
+            args['NextToken'] = token
+        page = cognito.list_users_in_group(**args)
+        for user in page.get('Users', []):
+            attrs = {a['Name']: a['Value'] for a in user.get('Attributes', [])}
+            if user.get('Enabled') and user.get('UserStatus') == 'CONFIRMED' and attrs.get('email_verified') == 'true':
+                users.add(identifier(attrs['sub']))
+        token = page.get('NextToken')
+        if not token:
+            return users
+        if token in tokens or len(tokens) >= 99:
+            raise ConnectionError('Invalid administrator pagination')
+        tokens.add(token)
+
+
 def lambda_handler(event, context):
     detail = event_envelope(event, 'incident-management', list(TYPES))
     data = detail['data']
     incident = identifier(data['incident_id'])
-    cursor, count, visited = (None, 0, set())
+    admins = administrator_ids()
+    recipients, cursor, visited = set(), None, set()
+    targeted = data.get('recipient_ids')
+    if targeted is not None and (not isinstance(targeted, list) or len(targeted) > 100 or any(not isinstance(v, str) for v in targeted)):
+        raise ValueError('Destinatarios dirigidos invalidos')
     while True:
         route = '/v1/reports/incidents/' + incident + '/recipients?limit=100'
         if cursor:
             route += '&cursor=' + quote(cursor, safe='')
         page = external_json(REPORTS_URL, route)
-        recipients = page['recipient_ids']
-        if not isinstance(recipients, list) or len(recipients) > 100:
+        values = page['recipient_ids']
+        if not isinstance(values, list) or len(values) > 100:
             raise ConnectionError('Contrato de destinatarios inválido')
-        if count == 0 and not recipients and not page.get('cursor'):
-            raise ConnectionError('Incident recipients are not visible yet; retrying')
-        for user in recipients:
+        for user in values:
             identifier(user)
-            targeted = data.get('recipient_ids')
-            if targeted is not None:
-                if not isinstance(targeted, list) or len(targeted) > 100 or any(not isinstance(value, str) for value in targeted):
-                    raise ValueError('Destinatarios dirigidos invalidos')
-                if user not in targeted:
-                    continue
-            notification_id = create_notification({'recipient_id': user, 'incident_id': incident, 'template': TYPES[detail['event_type']], 'channels': ['EMAIL', 'SMS', 'IN_APP'], 'variables': {'zone_name': data['zone_name'], 'incident_status': data['incident_status']}}, 'event:' + detail['event_id'] + ':' + user, detail['occurred_at'])
-            if notification_id is None:
-                raise ValueError('Evento repetido con contenido diferente')
-            count += 1
+            if targeted is None or user in targeted:
+                recipients.add(user)
         cursor = page.get('cursor')
         if not cursor:
             break
         if cursor in visited or len(visited) >= 99:
             raise ConnectionError('Paginación inválida o incidente mayor que 10000 destinatarios')
         visited.add(cursor)
-    return {'created_or_deduplicated': count}
+    if not recipients and not admins:
+        raise ConnectionError('Incident recipients are not visible yet; retrying')
+    for user in sorted(recipients | admins):
+        notification_id = create_notification({
+            'recipient_id': user, 'incident_id': incident,
+            'template': TYPES[detail['event_type']], 'channels': ['EMAIL', 'IN_APP'],
+            'variables': {'zone_name': data['zone_name'], 'incident_status': data['incident_status']}},
+            'event:' + detail['event_id'] + ':' + user, detail['occurred_at'], admin_copy=user in admins)
+        if notification_id is None:
+            raise ValueError('Evento repetido con contenido diferente')
+    return {'created_or_deduplicated': len(recipients | admins)}

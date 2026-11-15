@@ -64,6 +64,8 @@ def lambda_handler(event, context):
                 'headers': HEADERS,
                 'body': json.dumps({'message': 'Preferencias booleanas completas requeridas'}, default=str),
             }
+        if data['sms_enabled']:
+            raise ValueError('SMS no está disponible; utiliza correo o IN_APP')
         item = dict(data, user_id=user, updated_at=now())
         table.put_item(Item=item)
         if len(json.dumps(item, default=str).encode('utf-8')) > 5000000:

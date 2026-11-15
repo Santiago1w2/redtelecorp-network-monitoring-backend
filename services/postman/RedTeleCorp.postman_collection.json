@@ -3,7 +3,7 @@
     "_postman_id": "204b79cc-ce3c-46ef-84be-cf6d27140903",
     "name": "Red TeleCorp - APIs 03, 04 y 09",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "18 endpoints derivados de los serverless.yml y handlers. Importar también el environment, configurar 3 URLs y el IdToken de Cognito obtenido desde Identity y los grupos autorizados. Ejecutar en desarrollo con 1500 ms de delay. Crea datos de prueba, cambia cobertura y preferencias; no solicita EMAIL/SMS. Consultar EC2_Y_POSTMAN.md. No contiene credenciales ni evidencia de ejecución contra AWS."
+    "description": "18 endpoints derivados de los serverless.yml y handlers. Importar también el environment, configurar 3 URLs y el IdToken de Cognito obtenido desde Identity y los grupos autorizados. Ejecutar en desarrollo con 1500 ms de delay. Crea datos de prueba, cambia cobertura y preferencias; no solicita EMAIL/SMS. Consultar EC2_Y_POSTMAN.md. No contiene credenciales ni evidencia de ejecución contra AWS.\n\nNotificaciones: EMAIL usa SNS con suscripción confirmada; IN_APP permanece disponible. SMS ya no se admite. Los administradores activos del grupo admin reciben copia de todas las notificaciones. DELIVERY_ENABLED=false no envía correos externos."
   },
   "auth": {
     "type": "bearer",

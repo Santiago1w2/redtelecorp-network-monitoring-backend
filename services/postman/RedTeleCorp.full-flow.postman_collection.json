@@ -3,7 +3,7 @@
     "name": "Red TeleCorp - primera prueba completa",
     "_postman_id": "c0793881-fc39-4ec3-8a0e-85557a7e0a08",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "Usar un IdToken de admin confirmado. Ejecutar por etapas y esperar SQS/Streams/Step Functions en 08,11,13,17,19. No confundir HTTP 202 con procesamiento terminado. Solo datos ficticios e IN_APP. Flujo can?nico: 05 recibe reportes; 07 no se despliega por defecto. Las m?tricas requieren ?zona=."
+    "description": "Usar un IdToken de admin confirmado. Ejecutar por etapas y esperar SQS/Streams/Step Functions en 08,11,13,17,19. No confundir HTTP 202 con procesamiento terminado. Solo datos ficticios e IN_APP. Flujo can?nico: 05 recibe reportes; 07 no se despliega por defecto. Las m?tricas requieren ?zona=.\n\nNotificaciones: EMAIL usa SNS con suscripción confirmada; IN_APP permanece disponible. SMS ya no se admite. Los administradores activos del grupo admin reciben copia de todas las notificaciones. DELIVERY_ENABLED=false no envía correos externos."
   },
   "auth": {
     "type": "bearer",

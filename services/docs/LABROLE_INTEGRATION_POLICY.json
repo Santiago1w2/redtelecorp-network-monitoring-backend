@@ -1,0 +1,186 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ApplicationTables",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:Query",
+        "dynamodb:Scan",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:ConditionCheckItem"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:us-east-1:573505212581:table/rtc-*",
+        "arn:aws:dynamodb:us-east-1:573505212581:table/telecorp-identity-service-*",
+        "arn:aws:dynamodb:us-east-1:573505212581:table/telecorp-incidents-service-*",
+        "arn:aws:dynamodb:us-east-1:573505212581:table/redtelecorp-*",
+        "arn:aws:dynamodb:us-east-1:573505212581:table/rtc-*/index/*",
+        "arn:aws:dynamodb:us-east-1:573505212581:table/telecorp-identity-service-*/index/*",
+        "arn:aws:dynamodb:us-east-1:573505212581:table/telecorp-incidents-service-*/index/*",
+        "arn:aws:dynamodb:us-east-1:573505212581:table/redtelecorp-*/index/*"
+      ]
+    },
+    {
+      "Sid": "ApplicationStreams",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:DescribeStream",
+        "dynamodb:GetRecords",
+        "dynamodb:GetShardIterator"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:us-east-1:573505212581:table/rtc-*/stream/*",
+        "arn:aws:dynamodb:us-east-1:573505212581:table/telecorp-identity-service-*/stream/*",
+        "arn:aws:dynamodb:us-east-1:573505212581:table/telecorp-incidents-service-*/stream/*",
+        "arn:aws:dynamodb:us-east-1:573505212581:table/redtelecorp-*/stream/*"
+      ]
+    },
+    {
+      "Sid": "ListStreams",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:ListStreams"
+      ],
+      "Resource": [
+        "*"
+      ]
+    },
+    {
+      "Sid": "ApplicationQueues",
+      "Effect": "Allow",
+      "Action": [
+        "sqs:SendMessage",
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:GetQueueAttributes",
+        "sqs:ChangeMessageVisibility"
+      ],
+      "Resource": [
+        "arn:aws:sqs:us-east-1:573505212581:rtc-*",
+        "arn:aws:sqs:us-east-1:573505212581:telecorp-incidents-service-*"
+      ]
+    },
+    {
+      "Sid": "ApplicationEvents",
+      "Effect": "Allow",
+      "Action": [
+        "events:PutEvents"
+      ],
+      "Resource": [
+        "arn:aws:events:us-east-1:573505212581:event-bus/rtc-events-*",
+        "arn:aws:events:us-east-1:573505212581:event-bus/redtelecorp-customer-reports-*-events",
+        "arn:aws:events:us-east-1:573505212581:event-bus/default"
+      ]
+    },
+    {
+      "Sid": "InternalApis",
+      "Effect": "Allow",
+      "Action": [
+        "execute-api:Invoke"
+      ],
+      "Resource": [
+        "arn:aws:execute-api:us-east-1:573505212581:*/*/*/v1/internal/*",
+        "arn:aws:execute-api:us-east-1:573505212581:*/*/*/v1/infrastructure/*",
+        "arn:aws:execute-api:us-east-1:573505212581:*/*/*/v1/identity/*",
+        "arn:aws:execute-api:us-east-1:573505212581:*/*/*/v1/reports/*"
+      ]
+    },
+    {
+      "Sid": "IntegrationSecrets",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue"
+      ],
+      "Resource": [
+        "arn:aws:secretsmanager:us-east-1:573505212581:secret:rtc/gcp/ai/dev-*",
+        "arn:aws:secretsmanager:us-east-1:573505212581:secret:rtc/oracle/spatial/dev-*"
+      ]
+    },
+    {
+      "Sid": "AiSecureString",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter"
+      ],
+      "Resource": [
+        "arn:aws:ssm:us-east-1:573505212581:parameter/telecorp/*/gcp/ai-api-key"
+      ]
+    },
+    {
+      "Sid": "Identity",
+      "Effect": "Allow",
+      "Action": [
+        "cognito-idp:AdminGetUser",
+        "cognito-idp:AdminCreateUser",
+        "cognito-idp:AdminSetUserPassword",
+        "cognito-idp:AdminAddUserToGroup",
+        "cognito-idp:AdminRemoveUserFromGroup",
+        "cognito-idp:AdminListGroupsForUser",
+        "cognito-idp:ListUsersInGroup"
+      ],
+      "Resource": [
+        "arn:aws:cognito-idp:us-east-1:573505212581:userpool/*"
+      ]
+    },
+    {
+      "Sid": "StartIncidentWorkflow",
+      "Effect": "Allow",
+      "Action": [
+        "states:StartExecution"
+      ],
+      "Resource": [
+        "arn:aws:states:us-east-1:573505212581:stateMachine:OrquestadorIncidentesTeleCorp-*"
+      ]
+    },
+    {
+      "Sid": "WorkflowTasks",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:InvokeFunction"
+      ],
+      "Resource": [
+        "arn:aws:lambda:us-east-1:573505212581:function:telecorp-incidents-service-*"
+      ]
+    },
+    {
+      "Sid": "GeospatialAndHistoryObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::rtc-geospatial-573505212581-us-east-1-*/*",
+        "arn:aws:s3:::rtc-telemetry-history-573505212581-us-east-1-*/*"
+      ]
+    },
+    {
+      "Sid": "ApplicationLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": [
+        "arn:aws:logs:us-east-1:573505212581:log-group:/aws/lambda/*"
+      ]
+    },
+    {
+      "Sid": "PersonalEmailTopics",
+      "Effect": "Allow",
+      "Action": [
+        "sns:CreateTopic",
+        "sns:ListSubscriptionsByTopic",
+        "sns:Subscribe",
+        "sns:Publish"
+      ],
+      "Resource": "arn:aws:sns:us-east-1:573505212581:rtc-notifications-email-*"
+    }
+  ]
+}

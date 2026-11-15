@@ -8,7 +8,7 @@ provider:
   region: ${opt:region, 'us-east-1'}
   stage: ${opt:stage, 'dev'}
   memorySize: 256
-  timeout: 30
+  timeout: 28
   logRetentionInDays: 14
   iam:
     role: arn:aws:iam::573505212581:role/LabRole
@@ -21,9 +21,8 @@ provider:
     REPORTS_API_URL: ${param:reportsApiUrl, ''}
     SEND_QUEUE_URL: {Ref: SendQueue}
     DELIVERY_ENABLED: ${param:deliveryEnabled, 'false'}
-    SES_FROM_ADDRESS: ${param:sesFromAddress, ''}
-    SES_CONFIGURATION_SET: {Ref: SesConfigurationSet}
-    DELIVERY_TOPIC_ARN: {Ref: DeliveryTopic}
+    COGNITO_USER_POOL_ARN: ${self:custom.authorizer.arn}
+    SNS_EMAIL_TOPIC_PREFIX: rtc-notifications-email-${sls:stage}
     EVENT_BUS_NAME: ${param:eventBusName, 'rtc-events-${sls:stage}'}
 
 # 2. CORS y autenticación comunes para no repetirlos en cada endpoint.
@@ -243,53 +242,6 @@ resources:
           deadLetterTargetArn: {'Fn::GetAtt': [SendDlq, Arn]}
           maxReceiveCount: 5
 
-    # Topic SNS: DeliveryTopic.
-    DeliveryTopic:
-      Type: AWS::SNS::Topic
-      Properties:
-        TopicName: rtc-notifications-delivery-${sls:stage}
-
-    DeliveryTopicPolicy:
-      Type: AWS::SNS::TopicPolicy
-      Properties:
-        Topics:
-          - {Ref: DeliveryTopic}
-        PolicyDocument:
-          Version: '2012-10-17'
-          Statement:
-            - Effect: Allow
-              Principal:
-                Service: ses.amazonaws.com
-              Action: sns:Publish
-              Resource: {Ref: DeliveryTopic}
-              Condition:
-                StringEquals:
-                  AWS:SourceAccount: {Ref: 'AWS::AccountId'}
-                ArnEquals:
-                  AWS:SourceArn:
-                    Fn::Sub: arn:${AWS::Partition}:ses:${AWS::Region}:${AWS::AccountId}:configuration-set/${SesConfigurationSet}
-
-    SesConfigurationSet:
-      Type: AWS::SES::ConfigurationSet
-      Properties:
-        Name: rtc-notifications-${sls:stage}
-
-    SesEvents:
-      Type: AWS::SES::ConfigurationSetEventDestination
-      DependsOn: DeliveryTopicPolicy
-      Properties:
-        ConfigurationSetName: {Ref: SesConfigurationSet}
-        EventDestination:
-          Name: DeliveryStatus
-          Enabled: true
-          MatchingEventTypes:
-            - delivery
-            - bounce
-            - complaint
-            - reject
-          SnsDestination:
-            TopicARN: {Ref: DeliveryTopic}
-
     # Regla de eventos: IncidentRule.
     IncidentRule:
       Type: AWS::Events::Rule
@@ -372,22 +324,6 @@ resources:
         FunctionName: {Ref: ProcessDeliveryStatusLambdaFunction}
         Principal: events.amazonaws.com
         SourceArn: {'Fn::GetAtt': [ProviderRule, Arn]}
-
-    DeliverySubscription:
-      Type: AWS::SNS::Subscription
-      Properties:
-        TopicArn: {Ref: DeliveryTopic}
-        Protocol: lambda
-        Endpoint: {'Fn::GetAtt': [ProcessDeliveryStatusLambdaFunction, Arn]}
-
-    DeliveryPermission:
-      Type: AWS::Lambda::Permission
-      Properties:
-        FunctionName: {Ref: ProcessDeliveryStatusLambdaFunction}
-        Action: lambda:InvokeFunction
-        Principal: sns.amazonaws.com
-        SourceArn: {Ref: DeliveryTopic}
-        SourceAccount: {Ref: 'AWS::AccountId'}
 
     ConsumeIncidentEventsAsync:
       Type: AWS::Lambda::EventInvokeConfig
