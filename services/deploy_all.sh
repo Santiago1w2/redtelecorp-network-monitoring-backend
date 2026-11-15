@@ -133,11 +133,16 @@ run_service() (
     identity) directory="$ROOT_DIR/identity-access"; args+=("--param=adminEmails=$ADMIN_EMAILS") ;;
     infrastructure) directory="$ROOT_DIR/../MICROSERVICIO 2" ;;
     telemetry) directory="$ROOT_DIR/network-telemetry"; args+=("--param=createEventBus=$CREATE_EVENT_BUS"); [[ -z "$INFRASTRUCTURE_URL" ]] || args+=("--param=infrastructureApiUrl=$INFRASTRUCTURE_URL") ;;
-    coverage) directory="$ROOT_DIR/coverage-geospatial"; args+=("--param=oracleEnabled=$ORACLE_ENABLED" "--param=oracleSecurityGroupIds=${ORACLE_SECURITY_GROUP_IDS:-}" "--param=oracleSubnetIds=${ORACLE_SUBNET_IDS:-}"); [[ -z "$INFRASTRUCTURE_URL" ]] || args+=("--param=infrastructureApiUrl=$INFRASTRUCTURE_URL"); [[ -z "${ORACLE_SECRET_ARN:-}" ]] || args+=("--param=oracleSecretArn=$ORACLE_SECRET_ARN") ;;
+    coverage) directory="$ROOT_DIR/coverage-geospatial"; args+=("--param=oracleEnabled=$ORACLE_ENABLED");
+      [[ -z "${ORACLE_SECURITY_GROUP_IDS:-}" ]] || args+=("--param=oracleSecurityGroupIds=$ORACLE_SECURITY_GROUP_IDS");
+      [[ -z "${ORACLE_SUBNET_IDS:-}" ]] || args+=("--param=oracleSubnetIds=$ORACLE_SUBNET_IDS");
+      [[ -z "$INFRASTRUCTURE_URL" ]] || args+=("--param=infrastructureApiUrl=$INFRASTRUCTURE_URL"); [[ -z "${ORACLE_SECRET_ARN:-}" ]] || args+=("--param=oracleSecretArn=$ORACLE_SECRET_ARN") ;;
     reports) directory="$ROOT_DIR/../MICROSERVICIO 7" ;;
     field) directory="$ROOT_DIR/../MICROSERVICIO 8" ;;
     notifications) directory="$ROOT_DIR/notifications"; args+=("--param=deliveryEnabled=$DELIVERY_ENABLED" "--param=sesIdentity=${SES_IDENTITY:-unconfigured.invalid}"); [[ -z "$IDENTITY_URL" ]] || args+=("--param=identityApiUrl=$IDENTITY_URL"); [[ -z "$REPORTS_URL" ]] || args+=("--param=reportsApiUrl=$REPORTS_URL"); [[ -z "${SES_FROM_ADDRESS:-}" ]] || args+=("--param=sesFromAddress=$SES_FROM_ADDRESS") ;;
-    incidents) directory="$ROOT_DIR/incidents-report"; args+=("--param=aiEnabled=$AI_ENABLED" "--param=collectiveReportThreshold=$COLLECTIVE_REPORT_THRESHOLD" "--param=recurrentAntennaMinEvents=$RECURRENT_ANTENNA_MIN_EVENTS" "--param=recurrentAntennaMinDays=$RECURRENT_ANTENNA_MIN_DAYS" "--param=recurrentAntennaWindowDays=$RECURRENT_ANTENNA_WINDOW_DAYS" "--param=requiredFieldSkill=${REQUIRED_FIELD_SKILL:-NETWORK}" "--param=gcpAiApiKeyParam=$GCP_AI_API_KEY_PARAM" "--param=gcpAuthMode=$GCP_AUTH_MODE" "--param=gcpWifAudience=${GCP_WIF_AUDIENCE:-}" "--param=gcpInvokerServiceAccount=${GCP_INVOKER_SERVICE_ACCOUNT:-}");
+    incidents) directory="$ROOT_DIR/incidents-report"; args+=("--param=aiEnabled=$AI_ENABLED" "--param=collectiveReportThreshold=$COLLECTIVE_REPORT_THRESHOLD" "--param=recurrentAntennaMinEvents=$RECURRENT_ANTENNA_MIN_EVENTS" "--param=recurrentAntennaMinDays=$RECURRENT_ANTENNA_MIN_DAYS" "--param=recurrentAntennaWindowDays=$RECURRENT_ANTENNA_WINDOW_DAYS" "--param=requiredFieldSkill=${REQUIRED_FIELD_SKILL:-NETWORK}" "--param=gcpAiApiKeyParam=$GCP_AI_API_KEY_PARAM" "--param=gcpAuthMode=$GCP_AUTH_MODE");
+      [[ -z "${GCP_WIF_AUDIENCE:-}" ]] || args+=("--param=gcpWifAudience=$GCP_WIF_AUDIENCE");
+      [[ -z "${GCP_INVOKER_SERVICE_ACCOUNT:-}" ]] || args+=("--param=gcpInvokerServiceAccount=$GCP_INVOKER_SERVICE_ACCOUNT");
       [[ -z "$COVERAGE_URL" ]] || args+=("--param=coverageApiUrl=$COVERAGE_URL"); [[ -z "$TELEMETRY_URL" ]] || args+=("--param=telemetryApiUrl=$TELEMETRY_URL"); [[ -z "$LEGACY_REPORTS_URL" ]] || args+=("--param=legacyReportsApiUrl=$LEGACY_REPORTS_URL");
       [[ -z "${GCP_AI_BASE_URL:-}" ]] || args+=("--param=gcpAiBaseUrl=$GCP_AI_BASE_URL"); [[ -z "${GCP_AI_SECRET_ARN:-}" ]] || args+=("--param=gcpAiSecretArn=$GCP_AI_SECRET_ARN") ;;
     *) fail 'Servicio desconocido.' ;;
