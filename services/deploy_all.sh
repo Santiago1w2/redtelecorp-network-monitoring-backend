@@ -21,6 +21,8 @@ DELIVERY_ENABLED="${DELIVERY_ENABLED:-false}"
 DEPLOY_LEGACY_REPORTS="${DEPLOY_LEGACY_REPORTS:-false}"
 NETWORK_MODE="${NETWORK_MODE:-existing}"
 ORACLE_TLS_PORT="${ORACLE_TLS_PORT:-1521}"
+SIMULATOR_ENABLED="${SIMULATOR_ENABLED:-false}"
+SIMULATOR_SAMPLE_SIZE="${SIMULATOR_SAMPLE_SIZE:-5}"
 GCP_AUTH_MODE="${GCP_AUTH_MODE:-WIF}"
 COLLECTIVE_REPORT_THRESHOLD="${COLLECTIVE_REPORT_THRESHOLD:-10}"
 RECURRENT_ANTENNA_MIN_EVENTS="${RECURRENT_ANTENNA_MIN_EVENTS:-3}"
@@ -33,9 +35,20 @@ CREATE_EVENT_BUS="${CREATE_EVENT_BUS:-auto}"
 [[ "$AWS_REGION" == us-east-1 ]] || fail 'La configuración inicial está preparada para us-east-1; usa esa región en todos los servicios.'
 [[ "${FRONTEND_ORIGIN:-}" =~ ^https://[^/?\#[:space:]]+$ && "$FRONTEND_ORIGIN" != *REEMPLAZAR* ]] || fail 'Configura FRONTEND_ORIGIN con el origen HTTPS real.'
 [[ -n "${ADMIN_EMAILS:-}" && "$ADMIN_EMAILS" == *@* && "$ADMIN_EMAILS" != *REEMPLAZAR* ]] || fail 'Configura ADMIN_EMAILS con los correos administradores separados por coma.'
-for flag in "$AI_ENABLED" "$ORACLE_ENABLED" "$DELIVERY_ENABLED" "$DEPLOY_LEGACY_REPORTS"; do
+for flag in "$AI_ENABLED" "$ORACLE_ENABLED" "$DELIVERY_ENABLED" "$DEPLOY_LEGACY_REPORTS" "$SIMULATOR_ENABLED"; do
   case "$flag" in true|false) ;; *) fail 'Los indicadores de integración admiten true/false.' ;; esac
 done
+[[ "$SIMULATOR_SAMPLE_SIZE" =~ ^([1-9]|1[0-9]|20)$ ]] || fail 'SIMULATOR_SAMPLE_SIZE debe estar entre 1 y 20.'
+if [[ "$SIMULATOR_ENABLED" == true ]]; then
+  [[ "$STAGE" == dev ]] || fail 'El simulador solo se permite en dev.'
+  IFS=',' read -r -a SIMULATOR_IDS <<< "${SIMULATOR_ANTENNA_IDS:-}"
+  [[ "${#SIMULATOR_IDS[@]}" == 20 ]] || fail 'Prepara 20 antenas con scripts/prepare_antenna_simulator.py y carga su simulator.env.'
+  declare -A SIMULATOR_SEEN=()
+  for simulator_id in "${SIMULATOR_IDS[@]}"; do
+    [[ "$simulator_id" =~ ^ANT-SIM-[a-f0-9]{32}$ && -z "${SIMULATOR_SEEN[$simulator_id]:-}" ]] || fail 'IDs del simulador invalidos o repetidos.'
+    SIMULATOR_SEEN[$simulator_id]=1
+  done
+fi
 [[ "$AI_ENABLED" != true || -n "${GCP_AI_BASE_URL:-}" ]] || fail 'IA requiere GCP_AI_BASE_URL y clave en SSM SecureString o Secrets Manager.'
 [[ "$GCP_AUTH_MODE" == WIF || "$GCP_AUTH_MODE" == API_KEY ]] || fail 'GCP_AUTH_MODE debe ser WIF o API_KEY.'
 [[ "$COLLECTIVE_REPORT_THRESHOLD" =~ ^[1-9][0-9]{0,3}$ ]] || fail 'COLLECTIVE_REPORT_THRESHOLD debe ser un entero entre 1 y 9999.'
@@ -150,7 +163,13 @@ run_service() (
       fi ;;
     identity) directory="$ROOT_DIR/identity-access"; args+=("--param=adminEmails=$ADMIN_EMAILS") ;;
     infrastructure) directory="$ROOT_DIR/../MICROSERVICIO 2" ;;
-    telemetry) directory="$ROOT_DIR/network-telemetry"; args+=("--param=createEventBus=$CREATE_EVENT_BUS"); [[ -z "$INFRASTRUCTURE_URL" ]] || args+=("--param=infrastructureApiUrl=$INFRASTRUCTURE_URL") ;;
+    telemetry) directory="$ROOT_DIR/network-telemetry"
+      local simulator_flag="$SIMULATOR_ENABLED"
+      # El primer pase crea el bus antes de Infrastructure; aun no hay URL valida.
+      [[ "$action" != deploy || -n "$INFRASTRUCTURE_URL" ]] || simulator_flag=false
+      args+=("--param=createEventBus=$CREATE_EVENT_BUS" "--param=simulatorEnabled=$simulator_flag" "--param=simulatorSampleSize=$SIMULATOR_SAMPLE_SIZE");
+      [[ -z "${SIMULATOR_ANTENNA_IDS:-}" ]] || args+=("--param=simulatorAntennaIds=$SIMULATOR_ANTENNA_IDS");
+      [[ -z "$INFRASTRUCTURE_URL" ]] || args+=("--param=infrastructureApiUrl=$INFRASTRUCTURE_URL") ;;
     coverage) directory="$ROOT_DIR/coverage-geospatial"; args+=("--param=oracleEnabled=$ORACLE_ENABLED");
       [[ -z "${ORACLE_SECURITY_GROUP_IDS:-}" ]] || args+=("--param=oracleSecurityGroupIds=$ORACLE_SECURITY_GROUP_IDS");
       [[ -z "${ORACLE_SUBNET_IDS:-}" ]] || args+=("--param=oracleSubnetIds=$ORACLE_SUBNET_IDS");

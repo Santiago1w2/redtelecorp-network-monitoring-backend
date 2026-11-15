@@ -26,6 +26,9 @@ provider:
 
 # 2. CORS y autenticación comunes para no repetirlos en cada endpoint.
 custom:
+  simulatorEnabled:
+    'false': false
+    'true': true
   cors:
     origin: ${self:provider.environment.FRONTEND_ORIGIN}
     headers:
@@ -41,6 +44,21 @@ custom:
 # 3. Una Lambda por archivo; cada http indica su ruta y método.
 # lambda-proxy conserva el statusCode y body que devuelve el handler.
 functions:
+
+  simulateAntennas:
+    name: rtc-network-telemetry-simulate-antennas-${sls:stage}
+    handler: handlers.simulate_antennas.lambda_handler
+    timeout: 60
+    maximumRetryAttempts: 2
+    maximumEventAge: 120
+    environment:
+      STAGE: ${sls:stage}
+      SIMULATOR_ANTENNA_IDS: ${param:simulatorAntennaIds, ''}
+      SIMULATOR_SAMPLE_SIZE: ${param:simulatorSampleSize, '5'}
+    events:
+      - schedule:
+          rate: rate(1 minute)
+          enabled: ${self:custom.simulatorEnabled.${param:simulatorEnabled, 'false'}}
 
   # post_telemetry.py
   postTelemetry:

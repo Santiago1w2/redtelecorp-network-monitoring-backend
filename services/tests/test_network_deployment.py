@@ -75,6 +75,8 @@ fi
         'ADMIN_EMAILS=admin@example.test', 'ORACLE_ENABLED=true', 'ORACLE_SECRET_ARN=arn:aws:secretsmanager:us-east-1:573505212581:secret:test',
         'NETWORK_MODE=${TEST_MODE}', 'NETWORK_VPC_ID=vpc-abcdef12345678900', 'NETWORK_EGRESS_IP=198.51.100.10',
         'ORACLE_SECURITY_GROUP_IDS=sg-abcdef12345678900', 'ORACLE_SUBNET_IDS=subnet-abcdef12345678900',
+        'SIMULATOR_ENABLED=${TEST_SIMULATOR:-false}',
+        'SIMULATOR_ANTENNA_IDS=' + ','.join('ANT-SIM-' + f'{index:032x}' for index in range(20)),
         "PYTHON_BIN='" + sys.executable.replace('\\', '/') + "'",
         "SERVERLESS_BIN='" + str(bin_dir / 'serverless').replace('\\', '/') + "'",
     ]) + '\n', encoding='utf-8', newline='\n')
@@ -124,3 +126,13 @@ def test_check_never_deploys_resources(deployment):
     assert result.returncode == 0, result.stdout + result.stderr
     assert calls[0].startswith('network|print ')
     assert not any('|deploy ' in line for line in calls)
+
+
+def test_simulator_waits_for_infrastructure_before_schedule_activation(deployment):
+    result, calls = deployment(TEST_SIMULATOR='true')
+    assert result.returncode == 0, result.stdout + result.stderr
+    telemetry = [line for line in calls if line.startswith('network-telemetry|deploy ')]
+    assert len(telemetry) == 2
+    assert '--param=simulatorEnabled=false' in telemetry[0]
+    assert '--param=simulatorEnabled=true' in telemetry[1]
+    assert '--param=infrastructureApiUrl=https://api.example.test/dev' in telemetry[1]

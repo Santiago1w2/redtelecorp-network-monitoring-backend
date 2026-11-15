@@ -85,3 +85,8 @@ EC2_Y_POSTMAN
 !/network/serverless.yml
 !/network/README.md
 !/tests/test_network_deployment.py
+!/tests/test_antenna_simulator.py
+!/scripts/
+/scripts/*
+!/scripts/prepare_antenna_simulator.py
+!/docs/ANTENNA_SIMULATOR.md
