@@ -57,12 +57,12 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 DELIVERY_ENABLED="${DELIVERY_ENABLED:-false}"
 ORACLE_ENABLED="${ORACLE_ENABLED:-false}"
 MAX_BATCH="${MAX_BATCH:-100}"
+COGNITO_USER_POOL_ARN="${COGNITO_USER_POOL_ARN:-}"
 export AWS_REGION AWS_DEFAULT_REGION="$AWS_REGION" AWS_PAGER="" AWS_CLI_AUTO_PROMPT=off
 
 [[ "$STAGE" =~ ^[a-zA-Z0-9-]+$ ]] || fail 'STAGE solo admite letras, números y guiones.'
 [[ "$AWS_REGION" =~ ^[a-z0-9-]+$ ]] || fail 'AWS_REGION inválida.'
 [[ "${FRONTEND_ORIGIN:-}" =~ ^https://[^/?\#[:space:]]+$ ]] || fail 'FRONTEND_ORIGIN debe ser el origen HTTPS sin ruta ni barra final.'
-[[ "${IDENTITY_AUTHORIZER_ARN:-}" =~ ^arn:aws[a-z-]*:lambda:${AWS_REGION}:[0-9]{12}:function:.+ ]] || fail 'Configura IDENTITY_AUTHORIZER_ARN con la Lambda authorizer real de esta región.'
 case "$CREATE_EVENT_BUS" in auto|true|false) ;; *) fail 'CREATE_EVENT_BUS debe ser auto, true o false.' ;; esac
 case "$DELIVERY_ENABLED:$ORACLE_ENABLED" in true:true|true:false|false:true|false:false) ;; *) fail 'DELIVERY_ENABLED y ORACLE_ENABLED deben ser true o false.' ;; esac
 [[ "$MAX_BATCH" =~ ^[0-9]+$ ]] && (( 10#$MAX_BATCH >= 1 && 10#$MAX_BATCH <= 500 )) || fail 'MAX_BATCH debe estar entre 1 y 500.'
@@ -81,7 +81,10 @@ ACCOUNT_ID="$("${AWS[@]}" sts get-caller-identity --query Account --output text)
 [[ "$ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || fail 'AWS no devolvió un identificador de cuenta válido.'
 LAMBDA_ROLE_ARN="${LAMBDA_ROLE_ARN:-arn:aws:iam::$ACCOUNT_ID:role/LabRole}"
 [[ "$LAMBDA_ROLE_ARN" == "arn:aws:iam::$ACCOUNT_ID:role/"* ]] || fail 'LAMBDA_ROLE_ARN debe pertenecer a la cuenta autenticada.'
-[[ "$IDENTITY_AUTHORIZER_ARN" == "arn:aws:lambda:$AWS_REGION:$ACCOUNT_ID:function:"* ]] || fail 'El authorizer debe pertenecer a esta cuenta/región.'
+if [[ -z "$COGNITO_USER_POOL_ARN" ]]; then
+  COGNITO_USER_POOL_ARN="$("${AWS[@]}" ssm get-parameter --name "/telecorp/$STAGE/cognito/user-pool-arn" --query Parameter.Value --output text)" || fail 'No se pudo leer el User Pool de Identity. Despliega Identity primero o configura COGNITO_USER_POOL_ARN con su ARN real.'
+fi
+[[ "$COGNITO_USER_POOL_ARN" =~ ^arn:aws[a-z-]*:cognito-idp:[a-z0-9-]+:[0-9]{12}:userpool/[a-z0-9-]+_[A-Za-z0-9]+$ ]] || fail 'COGNITO_USER_POOL_ARN debe ser el ARN de un User Pool Cognito, no de una Lambda.'
 printf 'Cuenta: %s | Región: %s | Stage: %s | Acción: %s\n' "$ACCOUNT_ID" "$AWS_REGION" "$STAGE" "$ACTION"
 warn 'LabRole es un rol existente: el stack no cambia sus permisos. Consulta EC2_Y_POSTMAN.md.'
 
@@ -127,7 +130,7 @@ fi
 
 COMMON_PARAMS=(--stage "$STAGE" --region "$AWS_REGION"
   --param="frontendOrigin=$FRONTEND_ORIGIN"
-  --param="identityAuthorizerArn=$IDENTITY_AUTHORIZER_ARN"
+  --param="cognitoUserPoolArn=$COGNITO_USER_POOL_ARN"
   --param="lambdaRoleArn=$LAMBDA_ROLE_ARN"
   --param="eventBusName=$EVENT_BUS_NAME")
 

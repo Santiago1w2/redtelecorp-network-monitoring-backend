@@ -35,12 +35,10 @@ custom:
       - Authorization
       - Idempotency-Key
   authorizer:
-    name: identityAuthorizer
-    arn: ${param:identityAuthorizerArn, env:IDENTITY_AUTHORIZER_ARN}
-    type: request
-    identitySource: method.request.header.Authorization
-    resultTtlInSeconds: 0
-    managedExternally: true
+    name: TeleCorpAuthorizer
+    type: COGNITO_USER_POOLS
+    # Identity publica este ARN en SSM; el parámetro permite usar un ARN explícito.
+    arn: ${param:cognitoUserPoolArn, ssm:/telecorp/${sls:stage}/cognito/user-pool-arn}
 
 # 3. Una Lambda por archivo; cada http indica su ruta y método.
 # lambda-proxy conserva el statusCode y body que devuelve el handler.
@@ -481,34 +479,3 @@ resources:
   Outputs:
     EventBusName:
       Value: ${param:eventBusName, 'rtc-events-${sls:stage}'}
-        - QueueName
-        Period: 300
-        EvaluationPeriods: 1
-        Threshold: 1
-        ComparisonOperator: GreaterThanOrEqualToThreshold
-        TreatMissingData: notBreaching
-    SendNotificationNotificationsTableMapping:
-      Type: AWS::Lambda::EventSourceMapping
-      Properties:
-        FunctionName:
-          Ref: SendNotificationLambdaFunction
-        EventSourceArn:
-          Fn::GetAtt:
-          - NotificationsTable
-          - StreamArn
-        StartingPosition: TRIM_HORIZON
-        BatchSize: 100
-        MaximumBatchingWindowInSeconds: 5
-        BisectBatchOnFunctionError: true
-        MaximumRetryAttempts: 10
-        MaximumRecordAgeInSeconds: 82800
-        DestinationConfig:
-          OnFailure:
-            Destination:
-              Fn::GetAtt:
-              - StreamFailureQueue
-              - Arn
-  Outputs:
-    EventBusName:
-      Value:
-        Ref: EventBusName

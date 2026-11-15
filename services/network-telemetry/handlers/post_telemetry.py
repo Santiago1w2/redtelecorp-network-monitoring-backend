@@ -104,16 +104,31 @@ def body(event):
 
 def lambda_handler(event, context):
     try:
-        authorizer = event.get('requestContext', {}).get('authorizer', {})
-        claims = authorizer.get('jwt', {}).get('claims', authorizer.get('claims', authorizer))
+        # API Gateway verifica el token con el User Pool de Identity.
+        claims = ((event.get('requestContext') or {}).get('authorizer') or {}).get('claims') or {}
+        if not isinstance(claims, dict):
+            claims = {}
         user = claims.get('sub')
-        if not user:
+        if not isinstance(user, str) or not user.strip():
             return {
                 'statusCode': 401,
                 'headers': HEADERS,
                 'body': json.dumps({'message': 'Autenticación requerida'}, default=str),
             }
-        if 'telemetry:write' not in str(claims.get('scope', '')).split():
+        # Cognito/API Gateway puede entregar los grupos como lista o texto.
+        groups = claims.get('cognito:groups', [])
+        if isinstance(groups, str):
+            try:
+                groups = json.loads(groups)
+            except json.JSONDecodeError:
+                groups = groups.strip()
+                if groups.startswith('[') and groups.endswith(']'):
+                    groups = groups[1:-1]
+                groups = groups.split(',')
+        if not isinstance(groups, list) or any(not isinstance(group, str) for group in groups):
+            groups = []
+        groups = {group.strip() for group in groups}
+        if not groups.intersection({'admin', 'supervisor_red'}):
             return {
                 'statusCode': 403,
                 'headers': HEADERS,

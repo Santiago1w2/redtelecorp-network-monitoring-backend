@@ -3,14 +3,14 @@
     "_postman_id": "204b79cc-ce3c-46ef-84be-cf6d27140903",
     "name": "Red TeleCorp - APIs 03, 04 y 09",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "18 endpoints derivados de los serverless.yml y handlers. Importar también el environment, configurar 3 URLs y un token real con scopes. Ejecutar en desarrollo con 1500 ms de delay. Crea datos de prueba, cambia cobertura y preferencias; no solicita EMAIL/SMS. Consultar EC2_Y_POSTMAN.md. No contiene credenciales ni evidencia de ejecución contra AWS."
+    "description": "18 endpoints derivados de los serverless.yml y handlers. Importar también el environment, configurar 3 URLs y el IdToken de Cognito obtenido desde Identity y los grupos autorizados. Ejecutar en desarrollo con 1500 ms de delay. Crea datos de prueba, cambia cobertura y preferencias; no solicita EMAIL/SMS. Consultar EC2_Y_POSTMAN.md. No contiene credenciales ni evidencia de ejecución contra AWS."
   },
   "auth": {
     "type": "bearer",
     "bearer": [
       {
         "key": "token",
-        "value": "{{access_token}}",
+        "value": "{{cognito_id_token}}",
         "type": "string"
       }
     ]
@@ -21,7 +21,7 @@
       "script": {
         "type": "text/javascript",
         "exec": [
-          "if (!pm.variables.get('access_token')) throw new Error('Configura access_token con el token real de Identity 01, sin el prefijo Bearer.');",
+          "if (!pm.variables.get('cognito_id_token')) throw new Error('Configura cognito_id_token con el IdToken real de Cognito obtenido desde Identity 01, sin el prefijo Bearer.');",
           "if (!pm.variables.get('from')) pm.environment.set('from', new Date(Date.now() - 86400000).toISOString());",
           "if (!pm.variables.get('to')) pm.environment.set('to', new Date(Date.now() + 86400000).toISOString());"
         ]
@@ -56,7 +56,7 @@
                 "telemetry"
               ]
             },
-            "description": "Scope telemetry:write. Requiere una antena existente en Infrastructure 02. El 202 confirma la cola; espera al consumidor antes de consultar latest.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible.",
+            "description": "Grupos admin o supervisor_red. Requiere una antena existente en Infrastructure 02. El 202 confirma la cola; espera al consumidor antes de consultar latest.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"antenna_id\": \"{{antenna_id}}\",\n  \"timestamp\": \"{{measurement_timestamp}}\",\n  \"traffic_gb_min\": 135.5\n}",
@@ -127,7 +127,7 @@
                 "batch"
               ]
             },
-            "description": "Scope telemetry:write. Dos mediciones de la misma antena con timestamps distintos. 207 indica fallos parciales: reintentar solo los elementos retryable. El event_id es determinista por medición.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible.",
+            "description": "Grupos admin o supervisor_red. Dos mediciones de la misma antena con timestamps distintos. 207 indica fallos parciales: reintentar solo los elementos retryable. El event_id es determinista por medición.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"measurements\": [\n    {\n      \"antenna_id\": \"{{antenna_id}}\",\n      \"timestamp\": \"{{measurement_timestamp}}\",\n      \"traffic_gb_min\": 60\n    },\n    {\n      \"antenna_id\": \"{{antenna_id}}\",\n      \"timestamp\": \"{{previous_timestamp}}\",\n      \"traffic_gb_min\": 45\n    }\n  ]\n}",
@@ -195,7 +195,7 @@
                 "latest"
               ]
             },
-            "description": "Scope telemetry:read. 404 hasta que exista una medición procesada; un 202 anterior aún puede estar en SQS.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
+            "description": "Grupos admin, supervisor_red, operador_soporte o tecnico_campo. 404 hasta que exista una medición procesada; un 202 anterior aún puede estar en SQS.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
           },
           "event": [
             {
@@ -277,7 +277,7 @@
                 }
               ]
             },
-            "description": "Scope telemetry:read. Activa cursor para la página siguiente y conserva antena/from/to; un historial vacío es válido.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
+            "description": "Grupos admin, supervisor_red, operador_soporte o tecnico_campo. Activa cursor para la página siguiente y conserva antena/from/to; un historial vacío es válido.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
           },
           "event": [
             {
@@ -347,7 +347,7 @@
                 }
               ]
             },
-            "description": "Scope telemetry:read. Sin datos, count=0 y average/minimum/maximum=null. Decimales DynamoDB pueden llegar como strings.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
+            "description": "Grupos admin, supervisor_red, operador_soporte o tecnico_campo. Sin datos, count=0 y average/minimum/maximum=null. Decimales DynamoDB pueden llegar como strings.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
           },
           "event": [
             {
@@ -435,7 +435,7 @@
                 }
               ]
             },
-            "description": "Scope telemetry:read. status es opcional. Las alertas se crean por cambio de estado; una antena estable no genera una por medición.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
+            "description": "Grupos admin, supervisor_red, operador_soporte o tecnico_campo. status es opcional. Las alertas se crean por cambio de estado; una antena estable no genera una por medición.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
           },
           "event": [
             {
@@ -499,7 +499,7 @@
                 "zones"
               ]
             },
-            "description": "Scope coverage:write. Crea una zona persistente. Con new_zone_each_run=true genera un ID nuevo al enviar para evitar 409; usa false para reutilizar un ID manual.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible.",
+            "description": "Grupos admin o supervisor_red. Crea una zona persistente. Con new_zone_each_run=true genera un ID nuevo al enviar para evitar 409; usa false para reutilizar un ID manual.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"zone_id\": \"{{zone_id}}\",\n  \"name\": \"Zona Hospitalaria Postman\",\n  \"zone_type\": \"HEALTHCARE\",\n  \"criticality\": \"HIGH\",\n  \"geometry\": {\n    \"type\": \"Polygon\",\n    \"coordinates\": [\n      [\n        [\n          -77.04,\n          -12.1\n        ],\n        [\n          -77.03,\n          -12.1\n        ],\n        [\n          -77.03,\n          -12.11\n        ],\n        [\n          -77.04,\n          -12.11\n        ],\n        [\n          -77.04,\n          -12.1\n        ]\n      ]\n    ]\n  }\n}",
@@ -571,7 +571,7 @@
                 "{{antenna_id}}"
               ]
             },
-            "description": "Scope coverage:write. Modifica coordenadas/radio de una antena real de Infrastructure 02. Ejecuta primero Crear zona. Usar una antena de desarrollo.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible.",
+            "description": "Grupos admin o supervisor_red. Modifica coordenadas/radio de una antena real de Infrastructure 02. Ejecuta primero Crear zona. Usar una antena de desarrollo.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"latitude\": -12.105,\n  \"longitude\": -77.035,\n  \"coverage_radius_m\": 1500,\n  \"coverage_model\": \"ESTIMATED_CIRCLE\",\n  \"zone_id\": \"{{zone_id}}\"\n}",
@@ -637,7 +637,7 @@
                 "{{antenna_id}}"
               ]
             },
-            "description": "Scope coverage:read. Consulta de metadata y geometría almacenada.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
+            "description": "Grupos admin, supervisor_red, operador_soporte o tecnico_campo. Consulta de metadata y geometría almacenada.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
           },
           "event": [
             {
@@ -710,7 +710,7 @@
                 }
               ]
             },
-            "description": "Scope coverage:read. bbox=minLongitude,minLatitude,maxLongitude,maxLatitude es obligatorio. Índice actualizado por Streams; espera unos segundos tras PUT.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
+            "description": "Grupos admin, supervisor_red, operador_soporte o tecnico_campo. bbox=minLongitude,minLatitude,maxLongitude,maxLatitude es obligatorio. Índice actualizado por Streams; espera unos segundos tras PUT.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
           },
           "event": [
             {
@@ -767,7 +767,7 @@
                 "{{zone_id}}"
               ]
             },
-            "description": "Scope coverage:read. Devuelve metadata y geometría Polygon/MultiPolygon desde S3.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
+            "description": "Grupos admin, supervisor_red, operador_soporte o tecnico_campo. Devuelve metadata y geometría Polygon/MultiPolygon desde S3.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
           },
           "event": [
             {
@@ -849,7 +849,7 @@
                 }
               ]
             },
-            "description": "Scope coverage:read. Filtros opcionales bbox/zone_type/criticality. Mantén los filtros al reutilizar el cursor.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
+            "description": "Grupos admin, supervisor_red, operador_soporte o tecnico_campo. Filtros opcionales bbox/zone_type/criticality. Mantén los filtros al reutilizar el cursor.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
           },
           "event": [
             {
@@ -909,7 +909,7 @@
                 "impact-analysis"
               ]
             },
-            "description": "Scope coverage:analyze. Ejecuta tras guardar cobertura y refrescarse el índice de zonas. Calcula áreas con Shapely/pyproj; Oracle es opcional. Guarda un resultado de análisis en S3.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible.",
+            "description": "Grupos admin, supervisor_red u operador_soporte. Ejecuta tras guardar cobertura y refrescarse el índice de zonas. Calcula áreas con Shapely/pyproj; Oracle es opcional. Guarda un resultado de análisis en S3.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"antenna_ids\": [\n    \"{{antenna_id}}\"\n  ],\n  \"incident_id\": \"{{incident_id}}\"\n}",
@@ -1056,7 +1056,7 @@
                 "notifications"
               ]
             },
-            "description": "Scope notifications:send. recipient_id debe ser el user_id real del mismo usuario del token para consultar después sus notificaciones. Identity 01 debe confirmar que está activo. Nueva clave por envío; fija la variable notification_idempotency_key y desactiva new_notification_each_run para probar reintentos.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible.",
+            "description": "Grupos admin u operador_soporte. recipient_id debe ser el user_id real del mismo usuario del token para consultar después sus notificaciones. Identity 01 debe confirmar que está activo. Nueva clave por envío; fija la variable notification_idempotency_key y desactiva new_notification_each_run para probar reintentos.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"recipient_id\": \"{{recipient_id}}\",\n  \"incident_id\": \"{{incident_id}}\",\n  \"template\": \"INCIDENT_DETECTED\",\n  \"channels\": [\n    \"IN_APP\"\n  ],\n  \"variables\": {\n    \"zone_name\": \"Miraflores\",\n    \"incident_status\": \"EN_REVISION\"\n  }\n}",

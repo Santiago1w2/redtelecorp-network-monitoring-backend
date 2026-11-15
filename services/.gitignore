@@ -5,6 +5,7 @@
 !/deploy_ec2.sh
 !/deploy_ec2.env.example
 !/EC2_Y_POSTMAN.md
+!/REPORTE_REVISION_MAIN_Y_ORACLE.md
 !/postman/
 /postman/*
 !/postman/RedTeleCorp.postman_collection.json
@@ -30,3 +31,5 @@
 !/notifications/handlers/
 /notifications/handlers/*
 !/notifications/handlers/*.py
+REPORTE_REVISION_MAIN_Y_ORACLE.md
+EC2_Y_POSTMAN

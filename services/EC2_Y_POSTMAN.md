@@ -77,7 +77,21 @@ bash deploy_ec2.sh check all
 bash deploy_ec2.sh package all
 ```
 
-Completa obligatoriamente `FRONTEND_ORIGIN` (origen HTTPS sin ruta/barra final) e `IDENTITY_AUTHORIZER_ARN` con valores reales. Identity 01 debe proporcionar ese REQUEST Lambda authorizer, permitir su invocación por API Gateway y devolver `sub` y `scope` en el contexto. El script comprueba formato y cuenta/región, pero no certifica su política de invocación ni su lógica.
+Completa `FRONTEND_ORIGIN` (origen HTTPS sin ruta/barra final). Las tres APIs utilizan `COGNITO_USER_POOLS`, igual que Identity, y reutilizan su User Pool existente. Por defecto leen su ARN del parámetro SSM `/telecorp/<stage>/cognito/user-pool-arn`, publicado por Identity. Despliega Identity primero y permite a la identidad de despliegue leer ese parámetro.
+
+Si necesitas indicar el pool explícitamente, configura `COGNITO_USER_POOL_ARN` en `deploy_ec2.env`, o pasa `--param="cognitoUserPoolArn=<ARN_REAL_DEL_USER_POOL>"` al ejecutar Serverless directamente. Es un ARN `arn:aws:cognito-idp:...:userpool/...`; ya no se utiliza `IDENTITY_AUTHORIZER_ARN` ni una Lambda authorizer externa. El ARN puede pertenecer a la cuenta de Identity cuando sea distinta; en ese caso el valor SSM de esa otra cuenta no se descubre automáticamente y debes suministrar el ARN real.
+
+API Gateway verifica el token de Cognito y entrega `sub` y `cognito:groups` en `requestContext.authorizer.claims`. Los handlers no decodifican ni aceptan JWT sin verificar enviados en el body. Se comprueba pertenencia exacta a los grupos, aceptando su representación como lista o texto de API Gateway. Los scopes personalizados anteriores no conceden acceso.
+
+| Operación | Grupos permitidos |
+|---|---|
+| Leer telemetría y cobertura | `admin`, `supervisor_red`, `operador_soporte`, `tecnico_campo` |
+| Ingresar telemetría y modificar cobertura/zonas | `admin`, `supervisor_red` |
+| Analizar impacto | `admin`, `supervisor_red`, `operador_soporte` |
+| Crear notificaciones manuales | `admin`, `operador_soporte` |
+| Listar/leer/marcar notificaciones y guardar preferencias propias | Cualquier usuario autenticado; se conserva la restricción por `sub` |
+
+`clientes` puede gestionar sus propias notificaciones; no recibe permisos internos de red ni de envío manual. Para estas REST APIs sin scopes OAuth configurados, usa el **IdToken** que devuelve Cognito al iniciar sesión, igual que el contrato de Identity; no necesitas crear otro User Pool ni un Resource Server de scopes. [Integración oficial de API Gateway y Cognito](https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-integrate-with-cognito.html).
 
 Configura las URLs base de las APIs externas, sin `/v1` ni barra final:
 
@@ -140,12 +154,14 @@ Completa sus valores locales:
 | `telemetry_base_url` | `ServiceEndpoint` real de Telemetry, sin barra final |
 | `coverage_base_url` | `ServiceEndpoint` real de Coverage, sin barra final |
 | `notifications_base_url` | `ServiceEndpoint` real de Notifications, sin barra final |
-| `access_token` | Token real de Identity 01, sin escribir `Bearer ` delante |
+| `cognito_id_token` | IdToken real de Cognito obtenido al iniciar sesión con Identity, sin escribir `Bearer ` delante |
 | `antenna_id` | Antena existente en Infrastructure 02, preferentemente de desarrollo |
 | `recipient_id` | Usuario activo en Identity 01 y propietario del token utilizado |
 | `incident_id` | Identificador de prueba; por defecto `INC-POSTMAN-001` |
 
-El token debe tener `telemetry:read telemetry:write coverage:read coverage:write coverage:analyze notifications:send`. Las consultas de notificaciones y preferencias usan el usuario autenticado. Si necesitas tokens diferentes por servicio, sobrescribe Authorization en sus carpetas usando los tokens que te entregue Identity; no hay una ruta de login inventada en la colección.
+El IdToken debe pertenecer al User Pool de Identity. Para ejecutar toda la colección, usa un usuario del grupo `admin`; otros grupos tendrán los accesos indicados en la tabla anterior. Las consultas de notificaciones y preferencias siempre usan su `sub`, incluso para administradores. `recipient_id` debe corresponder al usuario del token para consultar luego la notificación propia. No hay una ruta de login inventada en la colección: se utiliza el inicio de sesión de Cognito del frontend/SDK de Identity.
+
+Si cambias un grupo/rol en Identity, renueva la sesión o el IdToken antes de probar: el token ya emitido conserva los grupos que tenía al generarse.
 
 Hay **18 requests**: 6 Telemetry, 7 Coverage y 5 Notifications. Cada uno incluye body/query de ejemplo y pruebas del código HTTP y contenido de respuesta. Los decimales DynamoDB pueden llegar como strings y los tests los convierten con `Number(...)` al comprobar rangos.
 
@@ -169,9 +185,11 @@ Las respuestas de notificaciones contienen datos del usuario; evita compartir lo
 
 ## 5. Verificación realizada y límites
 
-Verificación local del 14/11/2026: `bash -n` correcto; **11 escenarios Bash aprobados** con AWS/Serverless sustituidos (selección/orden de servicios, construcción de Coverage, propiedad del bus, bus ausente y errores de permisos); **18/18 rutas coinciden** con los YAML y **37 scripts JavaScript** pasan la revisión de sintaxis. Los argumentos generados también resolvieron correctamente `serverless print` en los tres servicios con el CLI local v3.40.0. Se corrigió el envío de parámetros CLI vacíos, que Serverless rechaza. Framework v4, recomendado para EC2, no se ejecutó en esta validación local.
+Verificación local del 14/11/2026: `bash -n` correcto; **14 escenarios Bash aprobados** con AWS/Serverless sustituidos (incluyen resolución del User Pool por SSM, ARN explícito de Identity en otra cuenta y rechazo de un ARN Lambda); **18/18 rutas coinciden** con los YAML y **37 scripts JavaScript** pasan la revisión de sintaxis. `serverless print` y `serverless package` terminaron correctamente en los tres servicios con el CLI local v3.40.0 y un ARN Cognito ficticio de validación. Framework v4, recomendado para EC2, no se ejecutó en esta validación local.
 
-Después de simplificar los YAML también pasaron `serverless print` y `serverless package` para los tres servicios, la verificación de los ZIP y `cfn-lint` sobre las tres plantillas CloudFormation generadas. Se ignoró únicamente W3005 (dependencias redundantes que genera Serverless). La comparación contra el respaldo confirmó los mismos nombres/configuración de recursos de negocio, 26 Lambdas y 18 rutas; las 18 rutas compiladas mantienen authorizer `CUSTOM`. El CLI v3.40 emite una advertencia por su catálogo antiguo de runtimes, aunque genera `python3.12` correctamente; usa Framework v4 en EC2.
+La simplificación anterior se validó con `serverless print`, `serverless package`, verificación de ZIP y `cfn-lint`. Posteriormente se cambió la autenticación de las 18 rutas a `COGNITO_USER_POOLS` y se retiró de Notifications el fragmento duplicado que invalidaba su YAML. Las pruebas de autenticación actuales están en `tests/test_cognito_authentication.py`; cubren los grupos de Identity, representaciones de claims, rechazo de scopes antiguos y propiedad de notificaciones. Estas son pruebas locales y no sustituyen una prueba con tokens emitidos por el User Pool desplegado. El CLI v3.40 tiene un catálogo antiguo de runtimes; usa Framework v4 en EC2 para Python 3.12.
+
+La suite completa posterior a la migración terminó con **73 pruebas aprobadas y 2 omitidas**. Los ZIP contienen los 26 handlers actuales; el CloudFormation generado declara tres authorizers nativos y las 18 rutas con `AuthorizationType=COGNITO_USER_POOLS`, sin crear un User Pool nuevo. No se verificaron credenciales reales ni se desplegaron estos cambios.
 
 Estas verificaciones no crean recursos y no certifican EC2, permisos IAM, autenticación, entrega de mensajes, Oracle ni endpoints reales. No se ejecutó la colección contra AWS. Se debe ejecutar el flujo contra el entorno AWS una vez configurados los valores anteriores.
 
