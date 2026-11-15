@@ -30,6 +30,20 @@ functions:
             type: COGNITO_USER_POOLS
             arn: !GetAtt TeleCorpUserPool.Arn
 
+  crearUsuario:
+    handler: src/handlers/crearUsuario.handler
+    environment:
+      USER_POOL_ID: !Ref TeleCorpUserPool
+    events:
+      - http:
+          path: auth/usuarios
+          method: post
+          cors: true
+          authorizer:
+            name: TeleCorpAuthorizer
+            type: COGNITO_USER_POOLS
+            arn: !GetAtt TeleCorpUserPool.Arn
+
   asignarRol:
     handler: src/handlers/asignarRol.handler
     environment:
