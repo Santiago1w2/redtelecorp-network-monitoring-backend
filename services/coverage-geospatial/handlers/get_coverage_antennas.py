@@ -1,5 +1,4 @@
 """Lambda autocontenida: configuración, auxiliares y handler en este archivo."""
-import functools
 from decimal import Decimal
 import json
 import os
@@ -16,11 +15,7 @@ dynamodb = boto3.resource('dynamodb')
 index = dynamodb.Table(os.environ.get('SPATIAL_INDEX_TABLE', 'rtc-spatial-index-dev'))
 table = dynamodb.Table(os.environ.get('COVERAGE_TABLE', 'rtc-coverage-dev'))
 s3 = boto3.client('s3')
-
-class Problem(Exception):
-
-    def __init__(self, status, message):
-        self.status, self.message = (status, message)
+HEADERS = {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': os.environ.get('FRONTEND_ORIGIN', 'https://localhost'), 'Vary': 'Origin', 'Cache-Control': 'no-store'}
 
 def dumps(value):
     if isinstance(value, Decimal):
@@ -35,45 +30,13 @@ def dumps(value):
         return '[' + ','.join((dumps(item) for item in value)) + ']'
     return json.dumps(value, allow_nan=False, separators=(',', ':'))
 
-def response(status, data):
-    payload = dumps(data)
-    if len(payload.encode()) > 5000000:
-        status, payload = (413, dumps({'error': 'Respuesta demasiado grande; reduzca limit o el intervalo'}))
-    return {'statusCode': status, 'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': os.environ.get('FRONTEND_ORIGIN', 'https://localhost'), 'Vary': 'Origin', 'Cache-Control': 'no-store'}, 'body': payload}
-
-def http(fn):
-
-    @functools.wraps(fn)
-    def wrapped(event, context):
-        try:
-            return fn(event, context)
-        except Problem as exc:
-            return response(exc.status, {'error': exc.message})
-        except (ValueError, TypeError, KeyError, OverflowError):
-            return response(400, {'error': 'Entrada inválida'})
-        except Exception as exc:
-            logger.error('operation_failed type=%s', type(exc).__name__)
-            return response(503, {'error': 'Dependencia temporalmente no disponible'})
-    return wrapped
-
-def principal(event, scope=None):
-    auth = event.get('requestContext', {}).get('authorizer', {})
-    claims = auth.get('jwt', {}).get('claims', auth.get('claims', auth))
-    user = claims.get('sub')
-    if not user:
-        raise Problem(401, 'Autenticación requerida')
-    scopes = str(claims.get('scope', '')).split()
-    if scope and scope not in scopes:
-        raise Problem(403, 'Permiso insuficiente')
-    return user
-
 def cells(bounds):
     a, b, c, d = bounds
     x1, x2 = (math.floor((a + 180) / CELL_SIZE), min(3599, math.floor((c + 180) / CELL_SIZE)))
     y1, y2 = (math.floor((b + 90) / CELL_SIZE), min(1799, math.floor((d + 90) / CELL_SIZE)))
     x1, y1 = (min(x1, 3599), min(y1, 1799))
     if (x2 - x1 + 1) * (y2 - y1 + 1) > MAX_CELLS:
-        raise Problem(422, 'Área demasiado amplia; subdivida el bbox/geometría')
+        raise OverflowError('Área demasiado amplia; subdivida el bbox/geometría')
     return [f'{x:04d}:{y:04d}' for x in range(x1, x2 + 1) for y in range(y1, y2 + 1)]
 
 def bbox(value):
@@ -87,7 +50,7 @@ def bbox(value):
         cells(values)
         return values
     except (ValueError, TypeError, AttributeError):
-        raise Problem(400, 'bbox inválido: minLon,minLat,maxLon,maxLat')
+        raise ValueError('bbox inválido: minLon,minLat,maxLon,maxLat')
 
 def decode_cursor(token, binding):
     if not token:
@@ -100,12 +63,12 @@ def decode_cursor(token, binding):
             raise ValueError()
         return data['key']
     except Exception:
-        raise Problem(400, 'Cursor inválido para esta consulta')
+        raise ValueError('Cursor inválido para esta consulta')
 
 def limit(value, maximum=100):
     result = int(value or 50)
     if not 1 <= result <= maximum:
-        raise Problem(400, 'Límite fuera de rango')
+        raise ValueError('Límite fuera de rango')
     return result
 
 def encode_cursor(key, binding):
@@ -119,20 +82,20 @@ def load_geometry(s3, item):
 def spatial_page(index, table, s3, kind, query):
     bounds = bbox(query['bbox']) if query.get('bbox') else None
     if kind == 'ANTENNA' and bounds is None:
-        raise Problem(400, 'bbox requerido')
+        raise ValueError('bbox requerido')
     selected = cells(bounds) if bounds else ['ZONES']
     binding = [kind, bounds, query.get('zone_type'), query.get('criticality')]
     cursor = decode_cursor(query.get('cursor'), binding) or {'cell': 0}
     position = int(cursor.get('cell', 0))
     if not 0 <= position < len(selected):
-        raise Problem(400, 'Cursor fuera de rango')
+        raise ValueError('Cursor fuera de rango')
     maximum, features, examined = (limit(query.get('limit')), [], 0)
     while position < len(selected) and len(features) < maximum and (examined < 500):
         cell = selected[position]
         options = {'KeyConditionExpression': Key('cell').eq(cell) & Key('entity_key').begins_with(kind + '#'), 'Limit': min(100, maximum - len(features))}
         if cursor.get('last'):
             if cursor['last'].get('cell') != cell:
-                raise Problem(400, 'Cursor de celda inválido')
+                raise ValueError('Cursor de celda inválido')
             options['ExclusiveStartKey'] = cursor['last']
         page = index.query(**options)
         for pointer in page.get('Items', []):
@@ -162,7 +125,57 @@ def spatial_page(index, table, s3, kind, query):
 def params(event):
     return event.get('queryStringParameters') or {}
 
-@http
 def lambda_handler(event, context):
-    principal(event, 'coverage:read')
-    return response(200, spatial_page(index, table, s3, 'ANTENNA', params(event)))
+    try:
+        authorizer = event.get('requestContext', {}).get('authorizer', {})
+        claims = authorizer.get('jwt', {}).get('claims', authorizer.get('claims', authorizer))
+        user = claims.get('sub')
+        if not user:
+            return {
+                'statusCode': 401,
+                'headers': HEADERS,
+                'body': json.dumps({'message': 'Autenticación requerida'}, default=str),
+            }
+        if 'coverage:read' not in str(claims.get('scope', '')).split():
+            return {
+                'statusCode': 403,
+                'headers': HEADERS,
+                'body': json.dumps({'message': 'Permiso insuficiente'}, default=str),
+            }
+        result = spatial_page(index, table, s3, 'ANTENNA', params(event))
+        if len(json.dumps(result, default=str).encode('utf-8')) > 5000000:
+            return {
+                'statusCode': 413,
+                'headers': HEADERS,
+                'body': json.dumps({'message': 'Respuesta demasiado grande; reduzca limit o el intervalo'}, default=str),
+            }
+        return {
+            'statusCode': 200,
+            'headers': HEADERS,
+            'body': json.dumps(result, default=str),
+        }
+    except (KeyError, TypeError) as exc:
+        return {
+            'statusCode': 400,
+            'headers': HEADERS,
+            'body': json.dumps({'message': 'Entrada inválida'}, default=str),
+        }
+    except ValueError as exc:
+        return {
+            'statusCode': 400,
+            'headers': HEADERS,
+            'body': json.dumps({'message': str(exc)}, default=str),
+        }
+    except OverflowError as exc:
+        return {
+            'statusCode': 422,
+            'headers': HEADERS,
+            'body': json.dumps({'message': str(exc)}, default=str),
+        }
+    except Exception as exc:
+        logger.error('operation_failed type=%s', type(exc).__name__)
+        return {
+            'statusCode': 503,
+            'headers': HEADERS,
+            'body': json.dumps({'message': 'Dependencia temporalmente no disponible'}, default=str),
+        }

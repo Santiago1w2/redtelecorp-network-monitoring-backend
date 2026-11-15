@@ -17,30 +17,25 @@ client = boto3.client('dynamodb')
 ALERTS = os.environ.get('ALERTS_TABLE', 'rtc-telemetry-alerts-dev')
 logger = logging.getLogger(__name__)
 
-class Problem(Exception):
-
-    def __init__(self, status, message):
-        self.status, self.message = (status, message)
-
 def identifier(value):
     if not isinstance(value, str) or not re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}', value):
-        raise Problem(400, 'Identificador inválido')
+        raise ValueError('Identificador inválido')
     return value
 
 def number(value, low=None, high=None):
     if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
-        raise Problem(400, 'Número inválido')
+        raise ValueError('Número inválido')
     result = Decimal(str(value))
     if not result.is_finite() or (low is not None and result < Decimal(str(low))) or (high is not None and result > Decimal(str(high))):
-        raise Problem(400, 'Número fuera de rango')
+        raise ValueError('Número fuera de rango')
     return result
 
 def timestamp(value):
     if not isinstance(value, str) or len(value) > 40:
-        raise Problem(400, 'Timestamp ISO 8601 requerido')
+        raise ValueError('Timestamp ISO 8601 requerido')
     dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
     if dt.tzinfo is None:
-        raise Problem(400, 'El timestamp requiere zona horaria')
+        raise ValueError('El timestamp requiere zona horaria')
     return dt.astimezone(timezone.utc).isoformat(timespec='microseconds').replace('+00:00', 'Z')
 
 def measurement(data):
@@ -50,7 +45,7 @@ def measurement(data):
     while len(digits) > 1 and digits[-1] == 0:
         digits.pop()
     if len(digits) > 38 or (value > 0 and (value < Decimal('1e-130') or value.adjusted() > 125)):
-        raise Problem(400, 'Precisión numérica no representable en DynamoDB')
+        raise ValueError('Precisión numérica no representable en DynamoDB')
     value = value.normalize(Context(prec=38)) if value else Decimal(0)
     date = timestamp(data['timestamp'])
     event_id = 'EVT-' + hashlib.sha256(f'{antenna}|{date}|{value}'.encode()).hexdigest()

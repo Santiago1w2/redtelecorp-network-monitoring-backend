@@ -10,30 +10,25 @@ dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table(os.environ.get('NOTIFICATIONS_TABLE', 'rtc-notifications-dev'))
 TOPIC = os.environ.get('DELIVERY_TOPIC_ARN', '')
 
-class Problem(Exception):
-
-    def __init__(self, status, message):
-        self.status, self.message = (status, message)
-
 def identifier(value):
     if not isinstance(value, str) or not re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}', value):
-        raise Problem(400, 'Identificador inválido')
+        raise ValueError('Identificador inválido')
     return value
 
 def timestamp(value):
     if not isinstance(value, str) or len(value) > 40:
-        raise Problem(400, 'Timestamp ISO 8601 requerido')
+        raise ValueError('Timestamp ISO 8601 requerido')
     dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
     if dt.tzinfo is None:
-        raise Problem(400, 'El timestamp requiere zona horaria')
+        raise ValueError('El timestamp requiere zona horaria')
     return dt.astimezone(timezone.utc).isoformat(timespec='microseconds').replace('+00:00', 'Z')
 
 def event_envelope(event, source, types):
     detail = event.get('detail', {})
     if event.get('source') != source or event.get('detail-type') not in types:
-        raise Problem(400, 'Origen de evento inválido')
+        raise ValueError('Origen de evento inválido')
     if detail.get('version') != '1.0' or detail.get('source') != source or detail.get('event_type') != event['detail-type']:
-        raise Problem(400, 'Contrato de evento inválido')
+        raise ValueError('Contrato de evento inválido')
     identifier(detail['event_id'])
     timestamp(detail['occurred_at'])
     return detail
@@ -41,7 +36,7 @@ def event_envelope(event, source, types):
 def apply_status(data):
     channel, status = (data['channel'], data['status'])
     if channel not in ('EMAIL', 'SMS') or status not in ('DELIVERED', 'BOUNCED', 'COMPLAINT', 'FAILED'):
-        raise Problem(400, 'Estado de entrega inválido')
+        raise ValueError('Estado de entrega inválido')
     date = timestamp(data['occurred_at'])
     page = table.query(IndexName='notification-id', KeyConditionExpression=Key('notification_id').eq(data['notification_id']), Limit=1)
     if not page.get('Items'):
@@ -65,7 +60,7 @@ def lambda_handler(event, context):
     if 'Records' in event:
         for record in event['Records']:
             if record.get('EventSource') != 'aws:sns' or record['Sns']['TopicArn'] != TOPIC:
-                raise Problem(403, 'Topic no autorizado')
+                raise PermissionError('Topic no autorizado')
             payload = json.loads(record['Sns']['Message'])
             kinds = {'Delivery': 'DELIVERED', 'Bounce': 'BOUNCED', 'Complaint': 'COMPLAINT', 'Reject': 'FAILED'}
             if payload.get('eventType') not in kinds:

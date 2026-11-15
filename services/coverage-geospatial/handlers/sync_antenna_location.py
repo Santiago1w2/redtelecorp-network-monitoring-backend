@@ -19,40 +19,35 @@ dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table(os.environ.get('COVERAGE_TABLE', 'rtc-coverage-dev'))
 zones = dynamodb.Table(os.environ.get('ZONES_TABLE', 'rtc-geozones-dev'))
 
-class Problem(Exception):
-
-    def __init__(self, status, message):
-        self.status, self.message = (status, message)
-
 def identifier(value):
     if not isinstance(value, str) or not re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}', value):
-        raise Problem(400, 'Identificador inválido')
+        raise ValueError('Identificador inválido')
     return value
 
 def timestamp(value):
     if not isinstance(value, str) or len(value) > 40:
-        raise Problem(400, 'Timestamp ISO 8601 requerido')
+        raise ValueError('Timestamp ISO 8601 requerido')
     dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
     if dt.tzinfo is None:
-        raise Problem(400, 'El timestamp requiere zona horaria')
+        raise ValueError('El timestamp requiere zona horaria')
     return dt.astimezone(timezone.utc).isoformat(timespec='microseconds').replace('+00:00', 'Z')
 
 def event_envelope(event, source, types):
     detail = event.get('detail', {})
     if event.get('source') != source or event.get('detail-type') not in types:
-        raise Problem(400, 'Origen de evento inválido')
+        raise ValueError('Origen de evento inválido')
     if detail.get('version') != '1.0' or detail.get('source') != source or detail.get('event_type') != event['detail-type']:
-        raise Problem(400, 'Contrato de evento inválido')
+        raise ValueError('Contrato de evento inválido')
     identifier(detail['event_id'])
     timestamp(detail['occurred_at'])
     return detail
 
 def number(value, low=None, high=None):
     if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
-        raise Problem(400, 'Número inválido')
+        raise ValueError('Número inválido')
     result = Decimal(str(value))
     if not result.is_finite() or (low is not None and result < Decimal(str(low))) or (high is not None and result > Decimal(str(high))):
-        raise Problem(400, 'Número fuera de rango')
+        raise ValueError('Número fuera de rango')
     return result
 
 def cells(bounds):
@@ -61,14 +56,14 @@ def cells(bounds):
     y1, y2 = (math.floor((b + 90) / CELL_SIZE), min(1799, math.floor((d + 90) / CELL_SIZE)))
     x1, y1 = (min(x1, 3599), min(y1, 1799))
     if (x2 - x1 + 1) * (y2 - y1 + 1) > MAX_CELLS:
-        raise Problem(422, 'Área demasiado amplia; subdivida el bbox/geometría')
+        raise OverflowError('Área demasiado amplia; subdivida el bbox/geometría')
     return [f'{x:04d}:{y:04d}' for x in range(x1, x2 + 1) for y in range(y1, y2 + 1)]
 
 def circle(latitude, longitude, radius):
     points = [GEOD.fwd(float(longitude), float(latitude), angle, float(radius))[:2] for angle in range(0, 360, 3)]
     result = Polygon(points)
     if result.bounds[2] - result.bounds[0] > 180 or result.bounds[1] < -89 or result.bounds[3] > 89:
-        raise Problem(422, 'Cobertura polar/antimeridiano requiere geometría dividida')
+        raise OverflowError('Cobertura polar/antimeridiano requiere geometría dividida')
     cells(result.bounds)
     return result
 
@@ -110,12 +105,12 @@ def save_coverage(antenna, data, location_version=None):
     latitude, longitude = (number(data['latitude'], -90, 90), number(data['longitude'], -180, 180))
     radius = number(data['coverage_radius_m'], high=100000)
     if radius <= 0 or data.get('coverage_model', 'ESTIMATED_CIRCLE') != 'ESTIMATED_CIRCLE':
-        raise Problem(400, 'Radio/modelo inválido')
+        raise ValueError('Radio/modelo inválido')
     zone = data.get('zone_id')
     if zone:
         identifier(zone)
         if not zones.get_item(Key={'zone_id': zone}).get('Item'):
-            raise Problem(404, 'Zona inexistente')
+            raise LookupError('Zona inexistente')
     geom = circle(latitude, longitude, radius)
     content = dumps(mapping(geom)).encode()
     key = f'geospatial/coverage/{antenna}/{hashlib.sha256(content).hexdigest()}.geojson'

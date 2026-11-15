@@ -1,6 +1,14 @@
-# Solo se versionan los handlers y serverless.yml de estas tres APIs.
+# APIs y herramientas de despliegue/prueba solicitadas para el equipo.
 /*
 !/.gitignore
+!/.gitattributes
+!/deploy_ec2.sh
+!/deploy_ec2.env.example
+!/EC2_Y_POSTMAN.md
+!/postman/
+/postman/*
+!/postman/RedTeleCorp.postman_collection.json
+!/postman/RedTeleCorp.postman_environment.json
 !/network-telemetry/
 !/coverage-geospatial/
 !/notifications/

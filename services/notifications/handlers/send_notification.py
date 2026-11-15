@@ -24,11 +24,6 @@ QUEUE = os.environ.get('SEND_QUEUE_URL', '')
 logger = logging.getLogger(__name__)
 deserializer = TypeDeserializer()
 
-class Problem(Exception):
-
-    def __init__(self, status, message):
-        self.status, self.message = (status, message)
-
 def now():
     return datetime.now(timezone.utc).isoformat(timespec='microseconds').replace('+00:00', 'Z')
 
@@ -58,10 +53,10 @@ def dumps(value):
 def external_json(base_url, route, method='GET', payload=None):
     """API privada de otro equipo con AWS_IAM; TLS y tiempo límite explícito."""
     if not base_url:
-        raise Problem(503, 'API de integración sin configurar')
+        raise ConnectionError('API de integración sin configurar')
     url = base_url.rstrip('/') + route
     if not url.startswith('https://') and (not (os.environ.get('LOCAL_TEST') == 'true' and url.startswith('http://127.0.0.1:'))):
-        raise Problem(503, 'La integración requiere HTTPS')
+        raise ConnectionError('La integración requiere HTTPS')
     data = dumps(payload).encode() if payload is not None else None
     headers = {'Content-Type': 'application/json'}
     if not os.environ.get('LOCAL_TEST') == 'true':
@@ -74,21 +69,21 @@ def external_json(base_url, route, method='GET', payload=None):
             return json.loads(result.read(1000000), parse_float=Decimal)
     except error.HTTPError as exc:
         if exc.code == 404:
-            raise Problem(404, 'Recurso externo no encontrado')
-        raise Problem(503, 'API externa no disponible')
+            raise LookupError('Recurso externo no encontrado')
+        raise ConnectionError('API externa no disponible')
     except (error.URLError, TimeoutError):
-        raise Problem(503, 'API externa no disponible')
+        raise ConnectionError('API externa no disponible')
 
 def recipient(user):
     result = external_json(IDENTITY_URL, '/v1/identity/users/' + user + '/notification-contact')
     if result.get('user_id') != user or not result.get('active'):
-        raise Problem(404, 'Destinatario inexistente/inactivo')
+        raise LookupError('Destinatario inexistente/inactivo')
     return result
 
 def send(key):
     item = table.get_item(Key=key, ConsistentRead=True).get('Item')
     if not item:
-        raise Problem(404, 'Notificación no encontrada')
+        raise LookupError('Notificación no encontrada')
     prefs = preferences.get_item(Key={'user_id': item['recipient_id']}, ConsistentRead=True).get('Item', {})
     defaults = {'EMAIL': True, 'SMS': False, 'IN_APP': True}
     contact, failed = (None, False)
@@ -127,7 +122,7 @@ def send(key):
                 failed = True
                 continue
             raise
-        except Problem:
+        except (ConnectionError, LookupError):
             failed = True
             continue
         try:

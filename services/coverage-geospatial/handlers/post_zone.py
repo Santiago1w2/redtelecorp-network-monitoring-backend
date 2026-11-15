@@ -1,5 +1,4 @@
 """Lambda autocontenida: configuración, auxiliares y handler en este archivo."""
-import functools
 from decimal import Decimal
 import json
 import os
@@ -19,11 +18,7 @@ s3 = boto3.client('s3')
 BUCKET = os.environ.get('GEOSPATIAL_BUCKET', '')
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table(os.environ.get('ZONES_TABLE', 'rtc-geozones-dev'))
-
-class Problem(Exception):
-
-    def __init__(self, status, message):
-        self.status, self.message = (status, message)
+HEADERS = {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': os.environ.get('FRONTEND_ORIGIN', 'https://localhost'), 'Vary': 'Origin', 'Cache-Control': 'no-store'}
 
 def dumps(value):
     if isinstance(value, Decimal):
@@ -38,52 +33,18 @@ def dumps(value):
         return '[' + ','.join((dumps(item) for item in value)) + ']'
     return json.dumps(value, allow_nan=False, separators=(',', ':'))
 
-def response(status, data):
-    payload = dumps(data)
-    if len(payload.encode()) > 5000000:
-        status, payload = (413, dumps({'error': 'Respuesta demasiado grande; reduzca limit o el intervalo'}))
-    return {'statusCode': status, 'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': os.environ.get('FRONTEND_ORIGIN', 'https://localhost'), 'Vary': 'Origin', 'Cache-Control': 'no-store'}, 'body': payload}
-
-def http(fn):
-
-    @functools.wraps(fn)
-    def wrapped(event, context):
-        try:
-            return fn(event, context)
-        except Problem as exc:
-            return response(exc.status, {'error': exc.message})
-        except (ValueError, TypeError, KeyError, OverflowError):
-            return response(400, {'error': 'Entrada inválida'})
-        except Exception as exc:
-            logger.error('operation_failed type=%s', type(exc).__name__)
-            return response(503, {'error': 'Dependencia temporalmente no disponible'})
-    return wrapped
-
-def principal(event, scope=None):
-    auth = event.get('requestContext', {}).get('authorizer', {})
-    claims = auth.get('jwt', {}).get('claims', auth.get('claims', auth))
-    user = claims.get('sub')
-    if not user:
-        raise Problem(401, 'Autenticación requerida')
-    scopes = str(claims.get('scope', '')).split()
-    if scope and scope not in scopes:
-        raise Problem(403, 'Permiso insuficiente')
-    return user
-
 def body(event):
     raw = event.get('body', '{}')
     if event.get('isBase64Encoded'):
         raw = base64.b64decode(raw, validate=True).decode()
     value = json.loads(raw, parse_float=Decimal) if isinstance(raw, str) else raw
     if not isinstance(value, dict):
-        raise Problem(400, 'Se requiere un objeto JSON')
-    if len(dumps(value).encode()) > 200000:
-        raise Problem(413, 'Solicitud demasiado grande')
+        raise ValueError('Se requiere un objeto JSON')
     return value
 
 def identifier(value):
     if not isinstance(value, str) or not re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}', value):
-        raise Problem(400, 'Identificador inválido')
+        raise ValueError('Identificador inválido')
     return value
 
 def cells(bounds):
@@ -92,23 +53,23 @@ def cells(bounds):
     y1, y2 = (math.floor((b + 90) / CELL_SIZE), min(1799, math.floor((d + 90) / CELL_SIZE)))
     x1, y1 = (min(x1, 3599), min(y1, 1799))
     if (x2 - x1 + 1) * (y2 - y1 + 1) > MAX_CELLS:
-        raise Problem(422, 'Área demasiado amplia; subdivida el bbox/geometría')
+        raise OverflowError('Área demasiado amplia; subdivida el bbox/geometría')
     return [f'{x:04d}:{y:04d}' for x in range(x1, x2 + 1) for y in range(y1, y2 + 1)]
 
 def number(value, low=None, high=None):
     if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
-        raise Problem(400, 'Número inválido')
+        raise ValueError('Número inválido')
     result = Decimal(str(value))
     if not result.is_finite() or (low is not None and result < Decimal(str(low))) or (high is not None and result > Decimal(str(high))):
-        raise Problem(400, 'Número fuera de rango')
+        raise ValueError('Número fuera de rango')
     return result
 
 def geometry(value):
     if not isinstance(value, dict) or value.get('type') not in ('Polygon', 'MultiPolygon'):
-        raise Problem(400, 'Se requiere Polygon o MultiPolygon')
+        raise ValueError('Se requiere Polygon o MultiPolygon')
     polygons = [value.get('coordinates')] if value['type'] == 'Polygon' else value.get('coordinates')
     if not isinstance(polygons, list) or not polygons:
-        raise Problem(400, 'Coordenadas vacías')
+        raise ValueError('Coordenadas vacías')
     vertices = 0
     try:
         for polygon in polygons:
@@ -131,7 +92,7 @@ def geometry(value):
         cells(result.bounds)
         return result
     except (ValueError, TypeError, IndexError):
-        raise Problem(400, 'Geometría GeoJSON inválida')
+        raise ValueError('Geometría GeoJSON inválida')
 
 def now():
     return datetime.now(timezone.utc).isoformat(timespec='microseconds').replace('+00:00', 'Z')
@@ -139,25 +100,93 @@ def now():
 def decimalize(value):
     return json.loads(dumps(value), parse_float=Decimal)
 
-@http
 def lambda_handler(event, context):
-    principal(event, 'coverage:write')
-    data = body(event)
-    zone = identifier(data['zone_id'])
-    if not isinstance(data['name'], str) or not 1 <= len(data['name'].strip()) <= 200:
-        raise Problem(400, 'Nombre inválido')
-    if data['zone_type'] not in ('HEALTHCARE', 'RESIDENTIAL', 'COMMERCIAL', 'INDUSTRIAL', 'EDUCATION', 'OTHER') or data['criticality'] not in ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL'):
-        raise Problem(400, 'Tipo/criticidad inválida')
-    geom = geometry(data['geometry'])
-    content = dumps(mapping(geom)).encode()
-    key = f'geospatial/zones/{zone}/{hashlib.sha256(content).hexdigest()}.geojson'
-    s3.put_object(Bucket=BUCKET, Key=key, Body=content, ContentType='application/geo+json', ServerSideEncryption='AES256')
-    item = {k: data[k] for k in ('zone_id', 'name', 'zone_type', 'criticality')}
-    item.update(geometry_s3_key=key, updated_at=now(), index_cells=cells(geom.bounds) + ['ZONES'])
     try:
-        table.put_item(Item=decimalize(item), ConditionExpression='attribute_not_exists(zone_id)')
-    except ClientError as exc:
-        if exc.response['Error']['Code'] == 'ConditionalCheckFailedException':
-            raise Problem(409, 'La zona ya existe')
-        raise
-    return response(201, item)
+        authorizer = event.get('requestContext', {}).get('authorizer', {})
+        claims = authorizer.get('jwt', {}).get('claims', authorizer.get('claims', authorizer))
+        user = claims.get('sub')
+        if not user:
+            return {
+                'statusCode': 401,
+                'headers': HEADERS,
+                'body': json.dumps({'message': 'Autenticación requerida'}, default=str),
+            }
+        if 'coverage:write' not in str(claims.get('scope', '')).split():
+            return {
+                'statusCode': 403,
+                'headers': HEADERS,
+                'body': json.dumps({'message': 'Permiso insuficiente'}, default=str),
+            }
+        request_data = body(event)
+        if len(dumps(request_data).encode('utf-8')) > 200000:
+            return {
+                'statusCode': 413,
+                'headers': HEADERS,
+                'body': json.dumps({'message': 'Solicitud demasiado grande'}, default=str),
+            }
+        data = request_data
+        zone = identifier(data['zone_id'])
+        if not isinstance(data['name'], str) or not 1 <= len(data['name'].strip()) <= 200:
+            return {
+                'statusCode': 400,
+                'headers': HEADERS,
+                'body': json.dumps({'message': 'Nombre inválido'}, default=str),
+            }
+        if data['zone_type'] not in ('HEALTHCARE', 'RESIDENTIAL', 'COMMERCIAL', 'INDUSTRIAL', 'EDUCATION', 'OTHER') or data['criticality'] not in ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL'):
+            return {
+                'statusCode': 400,
+                'headers': HEADERS,
+                'body': json.dumps({'message': 'Tipo/criticidad inválida'}, default=str),
+            }
+        geom = geometry(data['geometry'])
+        content = dumps(mapping(geom)).encode()
+        key = f'geospatial/zones/{zone}/{hashlib.sha256(content).hexdigest()}.geojson'
+        s3.put_object(Bucket=BUCKET, Key=key, Body=content, ContentType='application/geo+json', ServerSideEncryption='AES256')
+        item = {k: data[k] for k in ('zone_id', 'name', 'zone_type', 'criticality')}
+        item.update(geometry_s3_key=key, updated_at=now(), index_cells=cells(geom.bounds) + ['ZONES'])
+        try:
+            table.put_item(Item=decimalize(item), ConditionExpression='attribute_not_exists(zone_id)')
+        except ClientError as exc:
+            if exc.response['Error']['Code'] == 'ConditionalCheckFailedException':
+                return {
+                    'statusCode': 409,
+                    'headers': HEADERS,
+                    'body': json.dumps({'message': 'La zona ya existe'}, default=str),
+                }
+            raise
+        if len(json.dumps(item, default=str).encode('utf-8')) > 5000000:
+            return {
+                'statusCode': 413,
+                'headers': HEADERS,
+                'body': json.dumps({'message': 'Respuesta demasiado grande; reduzca limit o el intervalo'}, default=str),
+            }
+        return {
+            'statusCode': 201,
+            'headers': HEADERS,
+            'body': json.dumps(item, default=str),
+        }
+    except (KeyError, TypeError) as exc:
+        return {
+            'statusCode': 400,
+            'headers': HEADERS,
+            'body': json.dumps({'message': 'Entrada inválida'}, default=str),
+        }
+    except ValueError as exc:
+        return {
+            'statusCode': 400,
+            'headers': HEADERS,
+            'body': json.dumps({'message': str(exc)}, default=str),
+        }
+    except OverflowError as exc:
+        return {
+            'statusCode': 422,
+            'headers': HEADERS,
+            'body': json.dumps({'message': str(exc)}, default=str),
+        }
+    except Exception as exc:
+        logger.error('operation_failed type=%s', type(exc).__name__)
+        return {
+            'statusCode': 503,
+            'headers': HEADERS,
+            'body': json.dumps({'message': 'Dependencia temporalmente no disponible'}, default=str),
+        }

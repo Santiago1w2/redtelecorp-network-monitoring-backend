@@ -1,0 +1,2 @@
+/deploy_ec2.sh text eol=lf
+/deploy_ec2.env.example text eol=lf

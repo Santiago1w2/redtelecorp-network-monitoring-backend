@@ -1,5 +1,4 @@
 """Lambda autocontenida: configuración, auxiliares y handler en este archivo."""
-import functools
 from decimal import Decimal
 import json
 import os
@@ -12,11 +11,7 @@ import re
 logger = logging.getLogger(__name__)
 dynamodb = boto3.resource('dynamodb')
 table = dynamodb.Table(os.environ.get('HISTORY_TABLE', 'rtc-telemetry-history-index-dev'))
-
-class Problem(Exception):
-
-    def __init__(self, status, message):
-        self.status, self.message = (status, message)
+HEADERS = {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': os.environ.get('FRONTEND_ORIGIN', 'https://localhost'), 'Vary': 'Origin', 'Cache-Control': 'no-store'}
 
 def dumps(value):
     if isinstance(value, Decimal):
@@ -31,51 +26,19 @@ def dumps(value):
         return '[' + ','.join((dumps(item) for item in value)) + ']'
     return json.dumps(value, allow_nan=False, separators=(',', ':'))
 
-def response(status, data):
-    payload = dumps(data)
-    if len(payload.encode()) > 5000000:
-        status, payload = (413, dumps({'error': 'Respuesta demasiado grande; reduzca limit o el intervalo'}))
-    return {'statusCode': status, 'headers': {'Content-Type': 'application/json', 'Access-Control-Allow-Origin': os.environ.get('FRONTEND_ORIGIN', 'https://localhost'), 'Vary': 'Origin', 'Cache-Control': 'no-store'}, 'body': payload}
-
-def http(fn):
-
-    @functools.wraps(fn)
-    def wrapped(event, context):
-        try:
-            return fn(event, context)
-        except Problem as exc:
-            return response(exc.status, {'error': exc.message})
-        except (ValueError, TypeError, KeyError, OverflowError):
-            return response(400, {'error': 'Entrada inválida'})
-        except Exception as exc:
-            logger.error('operation_failed type=%s', type(exc).__name__)
-            return response(503, {'error': 'Dependencia temporalmente no disponible'})
-    return wrapped
-
-def principal(event, scope=None):
-    auth = event.get('requestContext', {}).get('authorizer', {})
-    claims = auth.get('jwt', {}).get('claims', auth.get('claims', auth))
-    user = claims.get('sub')
-    if not user:
-        raise Problem(401, 'Autenticación requerida')
-    scopes = str(claims.get('scope', '')).split()
-    if scope and scope not in scopes:
-        raise Problem(403, 'Permiso insuficiente')
-    return user
-
 def timestamp(value):
     if not isinstance(value, str) or len(value) > 40:
-        raise Problem(400, 'Timestamp ISO 8601 requerido')
+        raise ValueError('Timestamp ISO 8601 requerido')
     dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
     if dt.tzinfo is None:
-        raise Problem(400, 'El timestamp requiere zona horaria')
+        raise ValueError('El timestamp requiere zona horaria')
     return dt.astimezone(timezone.utc).isoformat(timespec='microseconds').replace('+00:00', 'Z')
 
 def window(query):
     start = timestamp(query.get('from', '1970-01-01T00:00:00Z'))
     end = timestamp(query.get('to', '9999-12-31T23:59:59.999999Z'))
     if start > end:
-        raise Problem(400, 'Intervalo invertido')
+        raise ValueError('Intervalo invertido')
     return (start, end)
 
 def decode_cursor(token, binding):
@@ -89,12 +52,12 @@ def decode_cursor(token, binding):
             raise ValueError()
         return data['key']
     except Exception:
-        raise Problem(400, 'Cursor inválido para esta consulta')
+        raise ValueError('Cursor inválido para esta consulta')
 
 def limit(value, maximum=100):
     result = int(value or 50)
     if not 1 <= result <= maximum:
-        raise Problem(400, 'Límite fuera de rango')
+        raise ValueError('Límite fuera de rango')
     return result
 
 def encode_cursor(key, binding):
@@ -109,14 +72,14 @@ def history_page(table, antenna, query):
     key = decode_cursor(query.get('cursor'), binding)
     if key:
         if key.get('antenna_id') != antenna:
-            raise Problem(400, 'Cursor inválido')
+            raise ValueError('Cursor inválido')
         options['ExclusiveStartKey'] = key
     result = table.query(**options)
     return (result.get('Items', []), encode_cursor(result.get('LastEvaluatedKey'), binding))
 
 def identifier(value):
     if not isinstance(value, str) or not re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}', value):
-        raise Problem(400, 'Identificador inválido')
+        raise ValueError('Identificador inválido')
     return value
 
 def path(event, name):
@@ -125,8 +88,52 @@ def path(event, name):
 def params(event):
     return event.get('queryStringParameters') or {}
 
-@http
 def lambda_handler(event, context):
-    principal(event, 'telemetry:read')
-    items, cursor = history_page(table, path(event, 'antennaId'), params(event))
-    return response(200, {'measurements': items, 'cursor': cursor})
+    try:
+        authorizer = event.get('requestContext', {}).get('authorizer', {})
+        claims = authorizer.get('jwt', {}).get('claims', authorizer.get('claims', authorizer))
+        user = claims.get('sub')
+        if not user:
+            return {
+                'statusCode': 401,
+                'headers': HEADERS,
+                'body': json.dumps({'message': 'Autenticación requerida'}, default=str),
+            }
+        if 'telemetry:read' not in str(claims.get('scope', '')).split():
+            return {
+                'statusCode': 403,
+                'headers': HEADERS,
+                'body': json.dumps({'message': 'Permiso insuficiente'}, default=str),
+            }
+        items, cursor = history_page(table, path(event, 'antennaId'), params(event))
+        result = {'measurements': items, 'cursor': cursor}
+        if len(json.dumps(result, default=str).encode('utf-8')) > 5000000:
+            return {
+                'statusCode': 413,
+                'headers': HEADERS,
+                'body': json.dumps({'message': 'Respuesta demasiado grande; reduzca limit o el intervalo'}, default=str),
+            }
+        return {
+            'statusCode': 200,
+            'headers': HEADERS,
+            'body': json.dumps(result, default=str),
+        }
+    except (KeyError, TypeError) as exc:
+        return {
+            'statusCode': 400,
+            'headers': HEADERS,
+            'body': json.dumps({'message': 'Entrada inválida'}, default=str),
+        }
+    except ValueError as exc:
+        return {
+            'statusCode': 400,
+            'headers': HEADERS,
+            'body': json.dumps({'message': str(exc)}, default=str),
+        }
+    except Exception as exc:
+        logger.error('operation_failed type=%s', type(exc).__name__)
+        return {
+            'statusCode': 503,
+            'headers': HEADERS,
+            'body': json.dumps({'message': 'Dependencia temporalmente no disponible'}, default=str),
+        }

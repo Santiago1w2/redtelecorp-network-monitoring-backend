@@ -1,0 +1,1308 @@
+{
+  "info": {
+    "_postman_id": "204b79cc-ce3c-46ef-84be-cf6d27140903",
+    "name": "Red TeleCorp - APIs 03, 04 y 09",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "18 endpoints derivados de los serverless.yml y handlers. Importar también el environment, configurar 3 URLs y un token real con scopes. Ejecutar en desarrollo con 1500 ms de delay. Crea datos de prueba, cambia cobertura y preferencias; no solicita EMAIL/SMS. Consultar EC2_Y_POSTMAN.md. No contiene credenciales ni evidencia de ejecución contra AWS."
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{access_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (!pm.variables.get('access_token')) throw new Error('Configura access_token con el token real de Identity 01, sin el prefijo Bearer.');",
+          "if (!pm.variables.get('from')) pm.environment.set('from', new Date(Date.now() - 86400000).toISOString());",
+          "if (!pm.variables.get('to')) pm.environment.set('to', new Date(Date.now() + 86400000).toISOString());"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "03 - Network Telemetry",
+      "item": [
+        {
+          "name": "01 - Encolar medición",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{telemetry_base_url}}/v1/telemetry",
+              "host": [
+                "{{telemetry_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "telemetry"
+              ]
+            },
+            "description": "Scope telemetry:write. Requiere una antena existente en Infrastructure 02. El 202 confirma la cola; espera al consumidor antes de consultar latest.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"antenna_id\": \"{{antenna_id}}\",\n  \"timestamp\": \"{{measurement_timestamp}}\",\n  \"traffic_gb_min\": 135.5\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.variables.get('telemetry_base_url');",
+                  "if (!base || !/^https:\\/\\//.test(base)) throw new Error('Configura telemetry_base_url con la URL HTTPS real, incluido el stage y sin barra final.');",
+                  "if (!pm.variables.get('antenna_id')) throw new Error('Configura antenna_id en el environment.');",
+                  "const stamp = Date.now();",
+                  "pm.environment.set('measurement_timestamp', new Date(stamp).toISOString());",
+                  "pm.environment.set('previous_timestamp', new Date(stamp - 60000).toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202', function () { pm.response.to.have.status(202); });",
+                  "pm.test('Respuesta JSON', function () { pm.response.to.be.json; });",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Evento encolado', function () {",
+                  "  pm.expect(data.event_id).to.match(/^EVT-[a-f0-9]{64}$/);",
+                  "  pm.expect(data.status).to.equal('QUEUED');",
+                  "});",
+                  "if (pm.response.code === 202) pm.environment.set('telemetry_event_id', data.event_id);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "02 - Encolar lote",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{telemetry_base_url}}/v1/telemetry/batch",
+              "host": [
+                "{{telemetry_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "telemetry",
+                "batch"
+              ]
+            },
+            "description": "Scope telemetry:write. Dos mediciones de la misma antena con timestamps distintos. 207 indica fallos parciales: reintentar solo los elementos retryable. El event_id es determinista por medición.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"measurements\": [\n    {\n      \"antenna_id\": \"{{antenna_id}}\",\n      \"timestamp\": \"{{measurement_timestamp}}\",\n      \"traffic_gb_min\": 60\n    },\n    {\n      \"antenna_id\": \"{{antenna_id}}\",\n      \"timestamp\": \"{{previous_timestamp}}\",\n      \"traffic_gb_min\": 45\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.variables.get('telemetry_base_url');",
+                  "if (!base || !/^https:\\/\\//.test(base)) throw new Error('Configura telemetry_base_url con la URL HTTPS real, incluido el stage y sin barra final.');",
+                  "if (!pm.variables.get('antenna_id')) throw new Error('Configura antenna_id en el environment.');",
+                  "const stamp = Date.now();",
+                  "pm.environment.set('measurement_timestamp', new Date(stamp).toISOString());",
+                  "pm.environment.set('previous_timestamp', new Date(stamp - 60000).toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202', function () { pm.response.to.have.status(202); });",
+                  "pm.test('Respuesta JSON', function () { pm.response.to.be.json; });",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Lote completo aceptado', function () {",
+                  "  pm.expect(data.accepted).to.be.an('array').with.lengthOf(2);",
+                  "  pm.expect(data.failed).to.be.an('array').with.lengthOf(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "03 - Última medición",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{telemetry_base_url}}/v1/telemetry/antennas/{{antenna_id}}/latest",
+              "host": [
+                "{{telemetry_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "telemetry",
+                "antennas",
+                "{{antenna_id}}",
+                "latest"
+              ]
+            },
+            "description": "Scope telemetry:read. 404 hasta que exista una medición procesada; un 202 anterior aún puede estar en SQS.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.variables.get('telemetry_base_url');",
+                  "if (!base || !/^https:\\/\\//.test(base)) throw new Error('Configura telemetry_base_url con la URL HTTPS real, incluido el stage y sin barra final.');",
+                  "if (!pm.variables.get('antenna_id')) throw new Error('Configura antenna_id en el environment.');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Respuesta JSON', function () { pm.response.to.be.json; });",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Medición y clasificación válidas', function () {",
+                  "  pm.expect(data.antenna_id).to.equal(pm.variables.get('antenna_id'));",
+                  "  const traffic = Number(data.traffic_gb_min);",
+                  "  pm.expect(Number.isFinite(traffic) && traffic >= 0).to.equal(true);",
+                  "  const status = traffic === 0 ? 'DISABLED' : traffic < 60 ? 'DOWN' : traffic <= 129 ? 'NORMAL' : 'SATURATED';",
+                  "  pm.expect(data.status).to.equal(status);",
+                  "  pm.expect(Number.isNaN(Date.parse(data.timestamp))).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "04 - Historial paginado",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{telemetry_base_url}}/v1/telemetry/antennas/{{antenna_id}}/history?from={{from}}&to={{to}}&limit={{limit}}",
+              "host": [
+                "{{telemetry_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "telemetry",
+                "antennas",
+                "{{antenna_id}}",
+                "history"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "{{from}}",
+                  "disabled": false
+                },
+                {
+                  "key": "to",
+                  "value": "{{to}}",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "{{limit}}",
+                  "disabled": false
+                },
+                {
+                  "key": "cursor",
+                  "value": "{{history_cursor}}",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Scope telemetry:read. Activa cursor para la página siguiente y conserva antena/from/to; un historial vacío es válido.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.variables.get('telemetry_base_url');",
+                  "if (!base || !/^https:\\/\\//.test(base)) throw new Error('Configura telemetry_base_url con la URL HTTPS real, incluido el stage y sin barra final.');",
+                  "if (!pm.variables.get('antenna_id')) throw new Error('Configura antenna_id en el environment.');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Respuesta JSON', function () { pm.response.to.be.json; });",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Página y cursor', function () {",
+                  "  pm.expect(data.measurements).to.be.an('array');",
+                  "  pm.expect(data).to.have.property('cursor');",
+                  "  pm.expect(data.cursor === null || typeof data.cursor === 'string').to.equal(true);",
+                  "});",
+                  "if (pm.response.code === 200) pm.environment.set('history_cursor', data.cursor || '');"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "05 - Resumen del intervalo",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{telemetry_base_url}}/v1/telemetry/antennas/{{antenna_id}}/summary?from={{from}}&to={{to}}",
+              "host": [
+                "{{telemetry_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "telemetry",
+                "antennas",
+                "{{antenna_id}}",
+                "summary"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "{{from}}",
+                  "disabled": false
+                },
+                {
+                  "key": "to",
+                  "value": "{{to}}",
+                  "disabled": false
+                }
+              ]
+            },
+            "description": "Scope telemetry:read. Sin datos, count=0 y average/minimum/maximum=null. Decimales DynamoDB pueden llegar como strings.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.variables.get('telemetry_base_url');",
+                  "if (!base || !/^https:\\/\\//.test(base)) throw new Error('Configura telemetry_base_url con la URL HTTPS real, incluido el stage y sin barra final.');",
+                  "if (!pm.variables.get('antenna_id')) throw new Error('Configura antenna_id en el environment.');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Respuesta JSON', function () { pm.response.to.be.json; });",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Estadísticas consistentes', function () {",
+                  "  pm.expect(data.count).to.be.a('number').and.at.least(0);",
+                  "  pm.expect(data.by_status).to.be.an('object');",
+                  "  pm.expect(Object.values(data.by_status).reduce((sum, n) => sum + Number(n), 0)).to.equal(data.count);",
+                  "  if (data.count > 0) {",
+                  "    pm.expect(Number(data.minimum)).to.be.at.most(Number(data.average));",
+                  "    pm.expect(Number(data.average)).to.be.at.most(Number(data.maximum));",
+                  "  } else {",
+                  "    ['average', 'minimum', 'maximum'].forEach(key => pm.expect(data[key]).to.equal(null));",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "06 - Alertas paginadas",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{telemetry_base_url}}/v1/telemetry/alerts?from={{from}}&to={{to}}&limit={{limit}}",
+              "host": [
+                "{{telemetry_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "telemetry",
+                "alerts"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "{{from}}",
+                  "disabled": false
+                },
+                {
+                  "key": "to",
+                  "value": "{{to}}",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "{{limit}}",
+                  "disabled": false
+                },
+                {
+                  "key": "status",
+                  "value": "{{alert_status}}",
+                  "disabled": true
+                },
+                {
+                  "key": "cursor",
+                  "value": "{{alerts_cursor}}",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Scope telemetry:read. status es opcional. Las alertas se crean por cambio de estado; una antena estable no genera una por medición.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.variables.get('telemetry_base_url');",
+                  "if (!base || !/^https:\\/\\//.test(base)) throw new Error('Configura telemetry_base_url con la URL HTTPS real, incluido el stage y sin barra final.');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Respuesta JSON', function () { pm.response.to.be.json; });",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Página y cursor', function () {",
+                  "  pm.expect(data.alerts).to.be.an('array');",
+                  "  pm.expect(data).to.have.property('cursor');",
+                  "  pm.expect(data.cursor === null || typeof data.cursor === 'string').to.equal(true);",
+                  "});",
+                  "if (pm.response.code === 200) pm.environment.set('alerts_cursor', data.cursor || '');"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "04 - Coverage & Geospatial",
+      "item": [
+        {
+          "name": "01 - Crear zona de prueba",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{coverage_base_url}}/v1/coverage/zones",
+              "host": [
+                "{{coverage_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "coverage",
+                "zones"
+              ]
+            },
+            "description": "Scope coverage:write. Crea una zona persistente. Con new_zone_each_run=true genera un ID nuevo al enviar para evitar 409; usa false para reutilizar un ID manual.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"zone_id\": \"{{zone_id}}\",\n  \"name\": \"Zona Hospitalaria Postman\",\n  \"zone_type\": \"HEALTHCARE\",\n  \"criticality\": \"HIGH\",\n  \"geometry\": {\n    \"type\": \"Polygon\",\n    \"coordinates\": [\n      [\n        [\n          -77.04,\n          -12.1\n        ],\n        [\n          -77.03,\n          -12.1\n        ],\n        [\n          -77.03,\n          -12.11\n        ],\n        [\n          -77.04,\n          -12.11\n        ],\n        [\n          -77.04,\n          -12.1\n        ]\n      ]\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.variables.get('coverage_base_url');",
+                  "if (!base || !/^https:\\/\\//.test(base)) throw new Error('Configura coverage_base_url con la URL HTTPS real, incluido el stage y sin barra final.');",
+                  "",
+                  "if (String(pm.variables.get('new_zone_each_run')) === 'true' || !pm.variables.get('zone_id')) {",
+                  "  pm.environment.set('zone_id', 'ZONE-POSTMAN-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 201', function () { pm.response.to.have.status(201); });",
+                  "pm.test('Respuesta JSON', function () { pm.response.to.be.json; });",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Zona guardada', function () {",
+                  "  pm.expect(data.zone_id).to.equal(pm.variables.get('zone_id'));",
+                  "  pm.expect(data.criticality).to.equal('HIGH');",
+                  "  pm.expect(data.geometry_s3_key).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "02 - Guardar cobertura de antena",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{coverage_base_url}}/v1/coverage/antennas/{{antenna_id}}",
+              "host": [
+                "{{coverage_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "coverage",
+                "antennas",
+                "{{antenna_id}}"
+              ]
+            },
+            "description": "Scope coverage:write. Modifica coordenadas/radio de una antena real de Infrastructure 02. Ejecuta primero Crear zona. Usar una antena de desarrollo.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"latitude\": -12.105,\n  \"longitude\": -77.035,\n  \"coverage_radius_m\": 1500,\n  \"coverage_model\": \"ESTIMATED_CIRCLE\",\n  \"zone_id\": \"{{zone_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.variables.get('coverage_base_url');",
+                  "if (!base || !/^https:\\/\\//.test(base)) throw new Error('Configura coverage_base_url con la URL HTTPS real, incluido el stage y sin barra final.');",
+                  "if (!pm.variables.get('antenna_id')) throw new Error('Configura antenna_id en el environment.');",
+                  "if (!pm.variables.get('zone_id')) throw new Error('Configura zone_id en el environment.');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Respuesta JSON', function () { pm.response.to.be.json; });",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Cobertura guardada', function () {",
+                  "  pm.expect(data.antenna_id).to.equal(pm.variables.get('antenna_id'));",
+                  "  pm.expect(Number(data.coverage_radius_m)).to.equal(1500);",
+                  "  pm.expect(data.coverage_model).to.equal('ESTIMATED_CIRCLE');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "03 - Obtener cobertura de antena",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{coverage_base_url}}/v1/coverage/antennas/{{antenna_id}}",
+              "host": [
+                "{{coverage_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "coverage",
+                "antennas",
+                "{{antenna_id}}"
+              ]
+            },
+            "description": "Scope coverage:read. Consulta de metadata y geometría almacenada.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.variables.get('coverage_base_url');",
+                  "if (!base || !/^https:\\/\\//.test(base)) throw new Error('Configura coverage_base_url con la URL HTTPS real, incluido el stage y sin barra final.');",
+                  "if (!pm.variables.get('antenna_id')) throw new Error('Configura antenna_id en el environment.');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Respuesta JSON', function () { pm.response.to.be.json; });",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Coordenadas y radio', function () {",
+                  "  pm.expect(data.antenna_id).to.equal(pm.variables.get('antenna_id'));",
+                  "  pm.expect(Number(data.latitude)).to.be.within(-90, 90);",
+                  "  pm.expect(Number(data.longitude)).to.be.within(-180, 180);",
+                  "  pm.expect(Number(data.coverage_radius_m)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "04 - Antenas dentro de bbox",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{coverage_base_url}}/v1/coverage/antennas?bbox={{bbox}}&limit={{limit}}",
+              "host": [
+                "{{coverage_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "coverage",
+                "antennas"
+              ],
+              "query": [
+                {
+                  "key": "bbox",
+                  "value": "{{bbox}}",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "{{limit}}",
+                  "disabled": false
+                },
+                {
+                  "key": "cursor",
+                  "value": "{{antennas_cursor}}",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Scope coverage:read. bbox=minLongitude,minLatitude,maxLongitude,maxLatitude es obligatorio. Índice actualizado por Streams; espera unos segundos tras PUT.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.variables.get('coverage_base_url');",
+                  "if (!base || !/^https:\\/\\//.test(base)) throw new Error('Configura coverage_base_url con la URL HTTPS real, incluido el stage y sin barra final.');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Respuesta JSON', function () { pm.response.to.be.json; });",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Página y cursor', function () {",
+                  "  pm.expect(data.features).to.be.an('array');",
+                  "  pm.expect(data).to.have.property('cursor');",
+                  "  pm.expect(data.cursor === null || typeof data.cursor === 'string').to.equal(true);",
+                  "});",
+                  "if (pm.response.code === 200) pm.environment.set('antennas_cursor', data.cursor || '');",
+                  "pm.test('GeoJSON', () => pm.expect(data.type).to.equal('FeatureCollection'));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "05 - Obtener zona",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{coverage_base_url}}/v1/coverage/zones/{{zone_id}}",
+              "host": [
+                "{{coverage_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "coverage",
+                "zones",
+                "{{zone_id}}"
+              ]
+            },
+            "description": "Scope coverage:read. Devuelve metadata y geometría Polygon/MultiPolygon desde S3.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.variables.get('coverage_base_url');",
+                  "if (!base || !/^https:\\/\\//.test(base)) throw new Error('Configura coverage_base_url con la URL HTTPS real, incluido el stage y sin barra final.');",
+                  "if (!pm.variables.get('zone_id')) throw new Error('Configura zone_id en el environment.');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Respuesta JSON', function () { pm.response.to.be.json; });",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Geometría de zona', function () {",
+                  "  pm.expect(data.zone_id).to.equal(pm.variables.get('zone_id'));",
+                  "  pm.expect(data.geometry.type).to.be.oneOf(['Polygon', 'MultiPolygon']);",
+                  "  pm.expect(data.geometry.coordinates).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "06 - Zonas filtradas y paginadas",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{coverage_base_url}}/v1/coverage/zones?bbox={{bbox}}&zone_type=HEALTHCARE&criticality=HIGH&limit={{limit}}",
+              "host": [
+                "{{coverage_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "coverage",
+                "zones"
+              ],
+              "query": [
+                {
+                  "key": "bbox",
+                  "value": "{{bbox}}",
+                  "disabled": false
+                },
+                {
+                  "key": "zone_type",
+                  "value": "HEALTHCARE",
+                  "disabled": false
+                },
+                {
+                  "key": "criticality",
+                  "value": "HIGH",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "{{limit}}",
+                  "disabled": false
+                },
+                {
+                  "key": "cursor",
+                  "value": "{{zones_cursor}}",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Scope coverage:read. Filtros opcionales bbox/zone_type/criticality. Mantén los filtros al reutilizar el cursor.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.variables.get('coverage_base_url');",
+                  "if (!base || !/^https:\\/\\//.test(base)) throw new Error('Configura coverage_base_url con la URL HTTPS real, incluido el stage y sin barra final.');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Respuesta JSON', function () { pm.response.to.be.json; });",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Página y cursor', function () {",
+                  "  pm.expect(data.features).to.be.an('array');",
+                  "  pm.expect(data).to.have.property('cursor');",
+                  "  pm.expect(data.cursor === null || typeof data.cursor === 'string').to.equal(true);",
+                  "});",
+                  "if (pm.response.code === 200) pm.environment.set('zones_cursor', data.cursor || '');",
+                  "pm.test('GeoJSON', () => pm.expect(data.type).to.equal('FeatureCollection'));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "07 - Analizar impacto",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{coverage_base_url}}/v1/coverage/impact-analysis",
+              "host": [
+                "{{coverage_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "coverage",
+                "impact-analysis"
+              ]
+            },
+            "description": "Scope coverage:analyze. Ejecuta tras guardar cobertura y refrescarse el índice de zonas. Calcula áreas con Shapely/pyproj; Oracle es opcional. Guarda un resultado de análisis en S3.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"antenna_ids\": [\n    \"{{antenna_id}}\"\n  ],\n  \"incident_id\": \"{{incident_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.variables.get('coverage_base_url');",
+                  "if (!base || !/^https:\\/\\//.test(base)) throw new Error('Configura coverage_base_url con la URL HTTPS real, incluido el stage y sin barra final.');",
+                  "if (!pm.variables.get('antenna_id')) throw new Error('Configura antenna_id en el environment.');",
+                  "if (!pm.variables.get('incident_id')) throw new Error('Configura incident_id en el environment.');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Respuesta JSON', function () { pm.response.to.be.json; });",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Análisis espacial real', function () {",
+                  "  pm.expect(data.incident_id).to.equal(pm.variables.get('incident_id'));",
+                  "  pm.expect(data.affected_zones).to.be.an('array');",
+                  "  pm.expect(Number(data.estimated_affected_area_km2)).to.be.at.least(0);",
+                  "  pm.expect(data.analysis_method).to.equal('WGS84_GEODESIC_CIRCLES_LAEA_SHAPELY');",
+                  "  pm.expect(data.oracle_status).to.be.oneOf(['DISABLED', 'VERIFIED_REQUEST', 'FALLBACK_LOCAL']);",
+                  "  pm.expect(data).not.to.have.property('affected_users');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "09 - Notifications",
+      "item": [
+        {
+          "name": "01 - Guardar preferencias de prueba",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{notifications_base_url}}/v1/notifications/preferences",
+              "host": [
+                "{{notifications_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "notifications",
+                "preferences"
+              ]
+            },
+            "description": "Usuario autenticado. Modifica SUS preferencias persistentes: desactiva EMAIL/SMS y activa IN_APP. Guarda tus valores anteriores si necesitas restaurarlos.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email_enabled\": false,\n  \"sms_enabled\": false,\n  \"in_app_enabled\": true,\n  \"incident_updates\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.variables.get('notifications_base_url');",
+                  "if (!base || !/^https:\\/\\//.test(base)) throw new Error('Configura notifications_base_url con la URL HTTPS real, incluido el stage y sin barra final.');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Respuesta JSON', function () { pm.response.to.be.json; });",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Solo canal interno habilitado', function () {",
+                  "  pm.expect(data.email_enabled).to.equal(false);",
+                  "  pm.expect(data.sms_enabled).to.equal(false);",
+                  "  pm.expect(data.in_app_enabled).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "02 - Crear notificación IN_APP",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{notification_idempotency_key}}"
+              }
+            ],
+            "url": {
+              "raw": "{{notifications_base_url}}/v1/notifications",
+              "host": [
+                "{{notifications_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "notifications"
+              ]
+            },
+            "description": "Scope notifications:send. recipient_id debe ser el user_id real del mismo usuario del token para consultar después sus notificaciones. Identity 01 debe confirmar que está activo. Nueva clave por envío; fija la variable notification_idempotency_key y desactiva new_notification_each_run para probar reintentos.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recipient_id\": \"{{recipient_id}}\",\n  \"incident_id\": \"{{incident_id}}\",\n  \"template\": \"INCIDENT_DETECTED\",\n  \"channels\": [\n    \"IN_APP\"\n  ],\n  \"variables\": {\n    \"zone_name\": \"Miraflores\",\n    \"incident_status\": \"EN_REVISION\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.variables.get('notifications_base_url');",
+                  "if (!base || !/^https:\\/\\//.test(base)) throw new Error('Configura notifications_base_url con la URL HTTPS real, incluido el stage y sin barra final.');",
+                  "if (!pm.variables.get('recipient_id')) throw new Error('Configura recipient_id en el environment.');",
+                  "if (!pm.variables.get('incident_id')) throw new Error('Configura incident_id en el environment.');",
+                  "if (String(pm.variables.get('new_notification_each_run')) === 'true' || !pm.variables.get('notification_idempotency_key')) {",
+                  "  pm.environment.set('notification_idempotency_key', 'POSTMAN-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202', function () { pm.response.to.have.status(202); });",
+                  "pm.test('Respuesta JSON', function () { pm.response.to.be.json; });",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Notificación encolada', function () {",
+                  "  pm.expect(data.notification_id).to.match(/^[0-9a-f-]{36}$/i);",
+                  "  pm.expect(data.status).to.equal('QUEUED');",
+                  "});",
+                  "if (pm.response.code === 202) pm.environment.set('notification_id', data.notification_id);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "03 - Listar mis notificaciones",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{notifications_base_url}}/v1/notifications?from={{from}}&to={{to}}&limit={{limit}}",
+              "host": [
+                "{{notifications_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "notifications"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "{{from}}",
+                  "disabled": false
+                },
+                {
+                  "key": "to",
+                  "value": "{{to}}",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "{{limit}}",
+                  "disabled": false
+                },
+                {
+                  "key": "read",
+                  "value": "false",
+                  "disabled": true
+                },
+                {
+                  "key": "incident_id",
+                  "value": "{{incident_id}}",
+                  "disabled": true
+                },
+                {
+                  "key": "cursor",
+                  "value": "{{notifications_cursor}}",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Lista solo notificaciones del usuario autenticado. read e incident_id son filtros opcionales. Una página vacía con cursor no garantiza el final: puede haber elementos descartados por filtros.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.variables.get('notifications_base_url');",
+                  "if (!base || !/^https:\\/\\//.test(base)) throw new Error('Configura notifications_base_url con la URL HTTPS real, incluido el stage y sin barra final.');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Respuesta JSON', function () { pm.response.to.be.json; });",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Página y cursor', function () {",
+                  "  pm.expect(data.notifications).to.be.an('array');",
+                  "  pm.expect(data).to.have.property('cursor');",
+                  "  pm.expect(data.cursor === null || typeof data.cursor === 'string').to.equal(true);",
+                  "});",
+                  "if (pm.response.code === 200) pm.environment.set('notifications_cursor', data.cursor || '');"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "04 - Obtener mi notificación",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{notifications_base_url}}/v1/notifications/{{notification_id}}",
+              "host": [
+                "{{notifications_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "notifications",
+                "{{notification_id}}"
+              ]
+            },
+            "description": "Solo su propietario. Un ID de otro usuario devuelve 404. El GSI puede tardar en reflejar una notificación nueva; reintenta si acabas de recibir 202.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.variables.get('notifications_base_url');",
+                  "if (!base || !/^https:\\/\\//.test(base)) throw new Error('Configura notifications_base_url con la URL HTTPS real, incluido el stage y sin barra final.');",
+                  "if (!pm.variables.get('notification_id')) throw new Error('Configura notification_id en el environment.');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Respuesta JSON', function () { pm.response.to.be.json; });",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Notificación propia y estados por canal', function () {",
+                  "  pm.expect(data.notification_id).to.equal(pm.variables.get('notification_id'));",
+                  "  pm.expect(data.recipient_id).to.equal(pm.variables.get('recipient_id'));",
+                  "  pm.expect(data.delivery_status).to.be.an('object');",
+                  "  pm.expect(data.delivery_status).to.have.property('IN_APP');",
+                  "  pm.expect(data.read).to.be.a('boolean');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "05 - Marcar mi notificación como leída",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{notifications_base_url}}/v1/notifications/{{notification_id}}/read",
+              "host": [
+                "{{notifications_base_url}}"
+              ],
+              "path": [
+                "v1",
+                "notifications",
+                "{{notification_id}}",
+                "read"
+              ]
+            },
+            "description": "Solo su propietario. No requiere body; cambia read=true de forma persistente.\n\nErrores comunes: 400 validación, 401 sin autenticación, 403 sin permiso, 404 recurso ausente, 413 tamaño, 503 dependencia no disponible."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.variables.get('notifications_base_url');",
+                  "if (!base || !/^https:\\/\\//.test(base)) throw new Error('Configura notifications_base_url con la URL HTTPS real, incluido el stage y sin barra final.');",
+                  "if (!pm.variables.get('notification_id')) throw new Error('Configura notification_id en el environment.');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Respuesta JSON', function () { pm.response.to.be.json; });",
+                  "const data = pm.response.json();",
+                  "",
+                  "pm.test('Lectura registrada', function () {",
+                  "  pm.expect(data.notification_id).to.equal(pm.variables.get('notification_id'));",
+                  "  pm.expect(data.read).to.equal(true);",
+                  "  pm.expect(data.read_at).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    }
+  ]
+}

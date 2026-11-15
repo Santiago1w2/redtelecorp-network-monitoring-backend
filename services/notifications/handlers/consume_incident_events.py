@@ -23,30 +23,25 @@ client = boto3.client('dynamodb')
 serializer = TypeSerializer()
 NOTIFICATIONS = os.environ.get('NOTIFICATIONS_TABLE', 'rtc-notifications-dev')
 
-class Problem(Exception):
-
-    def __init__(self, status, message):
-        self.status, self.message = (status, message)
-
 def identifier(value):
     if not isinstance(value, str) or not re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}', value):
-        raise Problem(400, 'Identificador inválido')
+        raise ValueError('Identificador inválido')
     return value
 
 def timestamp(value):
     if not isinstance(value, str) or len(value) > 40:
-        raise Problem(400, 'Timestamp ISO 8601 requerido')
+        raise ValueError('Timestamp ISO 8601 requerido')
     dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
     if dt.tzinfo is None:
-        raise Problem(400, 'El timestamp requiere zona horaria')
+        raise ValueError('El timestamp requiere zona horaria')
     return dt.astimezone(timezone.utc).isoformat(timespec='microseconds').replace('+00:00', 'Z')
 
 def event_envelope(event, source, types):
     detail = event.get('detail', {})
     if event.get('source') != source or event.get('detail-type') not in types:
-        raise Problem(400, 'Origen de evento inválido')
+        raise ValueError('Origen de evento inválido')
     if detail.get('version') != '1.0' or detail.get('source') != source or detail.get('event_type') != event['detail-type']:
-        raise Problem(400, 'Contrato de evento inválido')
+        raise ValueError('Contrato de evento inválido')
     identifier(detail['event_id'])
     timestamp(detail['occurred_at'])
     return detail
@@ -67,10 +62,10 @@ def dumps(value):
 def external_json(base_url, route, method='GET', payload=None):
     """API privada de otro equipo con AWS_IAM; TLS y tiempo límite explícito."""
     if not base_url:
-        raise Problem(503, 'API de integración sin configurar')
+        raise ConnectionError('API de integración sin configurar')
     url = base_url.rstrip('/') + route
     if not url.startswith('https://') and (not (os.environ.get('LOCAL_TEST') == 'true' and url.startswith('http://127.0.0.1:'))):
-        raise Problem(503, 'La integración requiere HTTPS')
+        raise ConnectionError('La integración requiere HTTPS')
     data = dumps(payload).encode() if payload is not None else None
     headers = {'Content-Type': 'application/json'}
     if not os.environ.get('LOCAL_TEST') == 'true':
@@ -83,22 +78,22 @@ def external_json(base_url, route, method='GET', payload=None):
             return json.loads(result.read(1000000), parse_float=Decimal)
     except error.HTTPError as exc:
         if exc.code == 404:
-            raise Problem(404, 'Recurso externo no encontrado')
-        raise Problem(503, 'API externa no disponible')
+            raise LookupError('Recurso externo no encontrado')
+        raise ConnectionError('API externa no disponible')
     except (error.URLError, TimeoutError):
-        raise Problem(503, 'API externa no disponible')
+        raise ConnectionError('API externa no disponible')
 
 def validate(data):
     identifier(data['recipient_id'])
     identifier(data['incident_id'])
     if data['template'] not in TEMPLATES:
-        raise Problem(400, 'Plantilla inválida')
+        raise ValueError('Plantilla inválida')
     channels = data['channels']
     if not isinstance(channels, list) or not channels or len(channels) > 3 or (len(set(channels)) != len(channels)) or set(channels) - {'EMAIL', 'SMS', 'IN_APP'}:
-        raise Problem(400, 'Canales inválidos')
+        raise ValueError('Canales inválidos')
     variables = data.get('variables', {})
     if not isinstance(variables, dict) or set(variables) != {'zone_name', 'incident_status'} or any((not isinstance(v, str) or not 1 <= len(v) <= 200 for v in variables.values())):
-        raise Problem(400, 'Variables requeridas: zone_name e incident_status')
+        raise ValueError('Variables requeridas: zone_name e incident_status')
     return {k: data[k] for k in ('recipient_id', 'incident_id', 'template', 'channels', 'variables')}
 
 def now():
@@ -114,7 +109,7 @@ def create_notification(data, idempotency_key, occurred_at=None):
     existing = dedup.get_item(Key={'idempotency_key': idempotency_key}, ConsistentRead=True).get('Item')
     if existing:
         if existing['payload_hash'] != digest:
-            raise Problem(409, 'Idempotency-Key reutilizada con otro contenido')
+            return None
         return existing['notification_id']
     notification_id = str(uuid.uuid4())
     created = timestamp(occurred_at) if occurred_at else now()
@@ -133,7 +128,7 @@ def create_notification(data, idempotency_key, occurred_at=None):
         if not existing:
             raise
         if existing['payload_hash'] != digest:
-            raise Problem(409, 'Idempotency-Key reutilizada con otro contenido')
+            return None
         return existing['notification_id']
     return notification_id
 
@@ -149,15 +144,17 @@ def lambda_handler(event, context):
         page = external_json(REPORTS_URL, route)
         recipients = page['recipient_ids']
         if not isinstance(recipients, list) or len(recipients) > 100:
-            raise Problem(503, 'Contrato de destinatarios inválido')
+            raise ConnectionError('Contrato de destinatarios inválido')
         for user in recipients:
             identifier(user)
-            create_notification({'recipient_id': user, 'incident_id': incident, 'template': TYPES[detail['event_type']], 'channels': ['EMAIL', 'SMS', 'IN_APP'], 'variables': {'zone_name': data['zone_name'], 'incident_status': data['incident_status']}}, 'event:' + detail['event_id'] + ':' + user, detail['occurred_at'])
+            notification_id = create_notification({'recipient_id': user, 'incident_id': incident, 'template': TYPES[detail['event_type']], 'channels': ['EMAIL', 'SMS', 'IN_APP'], 'variables': {'zone_name': data['zone_name'], 'incident_status': data['incident_status']}}, 'event:' + detail['event_id'] + ':' + user, detail['occurred_at'])
+            if notification_id is None:
+                raise ValueError('Evento repetido con contenido diferente')
             count += 1
         cursor = page.get('cursor')
         if not cursor:
             break
         if cursor in visited or len(visited) >= 99:
-            raise Problem(503, 'Paginación inválida o incidente mayor que 10000 destinatarios')
+            raise ConnectionError('Paginación inválida o incidente mayor que 10000 destinatarios')
         visited.add(cursor)
     return {'created_or_deduplicated': count}
