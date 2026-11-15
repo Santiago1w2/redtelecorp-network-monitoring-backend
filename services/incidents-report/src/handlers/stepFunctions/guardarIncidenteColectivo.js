@@ -5,6 +5,7 @@ const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), { marshallOption
 const now = () => new Date().toISOString();
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const identifier = value => { if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value)) throw new Error('InvalidIdentifier'); return value; };
+const BAD_ANTENNA_STATES = new Set(['DOWN', 'DISABLED', 'SATURATED']);
 async function get(TableName, Key) { return (await ddb.send(new GetCommand({ TableName, Key, ConsistentRead: true }))).Item; }
 function audit(id, at, eventId, previous, next, actor = 'INCIDENT-MANAGEMENT', comment = '') {
   return { entidadId: id, timestamp: at + '#' + eventId, occurred_at: at, estadoAnterior: previous || null, estadoNuevo: next, actorId: actor, comentario: comment };
@@ -130,9 +131,12 @@ exports.handler = async event => {
     incident = { incidenteId, zona: identifier(event.zona), estado: 'DETECTADO', revision: 0,
       reporteIds: event.reporteIds, recipient_ids: event.recipient_ids, usuariosReportantes: event.usuariosReportantes,
       antenasAfectadas: event.antenasNormalizadas, impacto: event.impact, diagnosticoIA: event.diagnosticoIA,
+      antenasConFalla: (event.antenasNormalizadas || []).filter(antenna => BAD_ANTENNA_STATES.has(antenna.status)),
+      ...(event.recurrencia ? { recurrenciaAntena: event.recurrencia } : {}),
       tipoProblema: event.tipoProblema || 'NETWORK_TELEMETRY', work_order_required: event.diagnosticoIA.requiere_cuadrilla_campo || event.diagnosticoIA.riesgo_estructural === 'ALTO',
       createdAt: now(), updatedAt: now() };
-    const notification = await outbox('incident.collective.detected', incident, event.cause_event_id);
+    const notification = await outbox(event.recurrencia ? 'incident.preventive.detected' : 'incident.collective.detected', incident, event.cause_event_id,
+      { criticality: event.impact?.criticality || 'UNKNOWN' });
     try { await ddb.send(new TransactWriteCommand({ TransactItems: [
       { Put: { TableName: process.env.INCIDENTES_TABLE, Item: incident, ConditionExpression: 'attribute_not_exists(incidenteId)' } },
       { Put: { TableName: process.env.OUTBOX_TABLE, Item: notification } },

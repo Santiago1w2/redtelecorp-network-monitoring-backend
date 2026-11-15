@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, DeleteCommand, QueryCommand, TransactWriteCommand } = require('@aws-sdk/lib-dynamodb');
+const { projectMetric } = require('../lib/projectMetric');
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), { marshallOptions: { removeUndefinedValues: true } });
 const now = () => new Date().toISOString();
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -10,15 +11,21 @@ function audit(id, at, eventId, previous, next, actor = 'INCIDENT-MANAGEMENT', c
   return { entidadId: id, timestamp: at + '#' + eventId, occurred_at: at, estadoAnterior: previous || null, estadoNuevo: next, actorId: actor, comentario: comment };
 }
 
-async function reportsInZone(zone, problemType) {
-  const items = []; let key;
-  do { const page = await ddb.send(new QueryCommand({ TableName: process.env.REPORTES_TABLE, IndexName: 'ZonaCreatedAtIndex',
-    KeyConditionExpression: 'zona = :z AND createdAt BETWEEN :from AND :to',
-    FilterExpression: problemType ? 'tipoProblema = :type' : undefined,
-    ExpressionAttributeValues: { ':z': zone, ':from': new Date(Date.now() - 86400000).toISOString(), ':to': now(), ...(problemType ? { ':type': problemType } : {}) }, ExclusiveStartKey: key }));
-    items.push(...(page.Items || [])); key = page.LastEvaluatedKey;
-    if (items.length > 1000) throw new Error('ZoneReportLimit1000');
-  } while (key); return items;
+async function distinctReportersInZone(zone, problemType, requiredCount) {
+  const users = new Set(); let key;
+  do {
+    const page = await ddb.send(new QueryCommand({ TableName: process.env.REPORTES_TABLE, IndexName: 'ZonaCreatedAtIndex',
+      KeyConditionExpression: 'zona = :z AND createdAt BETWEEN :from AND :to',
+      FilterExpression: problemType ? 'tipoProblema = :type' : undefined,
+      ExpressionAttributeValues: { ':z': zone, ':from': new Date(Date.now() - 86400000).toISOString(), ':to': now(), ...(problemType ? { ':type': problemType } : {}) },
+      ProjectionExpression: 'userId', Limit: 100, ExclusiveStartKey: key }));
+    for (const item of page.Items || []) {
+      if (item.userId) users.add(item.userId);
+      if (users.size >= requiredCount) return users.size;
+    }
+    key = page.LastEvaluatedKey;
+  } while (key);
+  return users.size;
 }
 async function outbox(type, incident, cause, extra = {}) {
   const event_id = 'EVT-' + hash(incident.incidenteId + ':' + type + ':' + cause);
@@ -131,12 +138,27 @@ const ALLOWED = {
   'incident-management': ['report.created', 'incident.orchestration.retry', 'incident.status.requested'],
 };
 
+const BAD_ANTENNA_STATES = new Set(['DOWN', 'DISABLED', 'SATURATED']);
+
+function mergeFaultyAntennas(incident, current = []) {
+  const faults = new Map();
+  for (const antenna of [...(incident.antenasConFalla || []), ...(incident.antenasAfectadas || []), ...current]) {
+    if (antenna?.antenna_id && BAD_ANTENNA_STATES.has(antenna.status) && !faults.has(antenna.antenna_id)) {
+      faults.set(antenna.antenna_id, antenna);
+    }
+  }
+  return [...faults.values()];
+}
+
 async function transition(incident, status, cause, updates = {}) {
   if (incident.estado === 'CERRADA' || (incident.estado === 'SOLUCIONADA' && status !== 'CERRADA')) return;
   if (incident.estado === status && Object.entries(updates).every(([key, value]) => JSON.stringify(incident[key]) === JSON.stringify(value))) return;
-  const updated = { ...incident, ...updates, estado: status, updatedAt: now(), revision: (incident.revision || 0) + 1 };
+  const updated = { ...incident, ...updates, antenasConFalla: mergeFaultyAntennas(incident, updates.antenasAfectadas), estado: status, updatedAt: now(), revision: (incident.revision || 0) + 1 };
   const type = ['SOLUCIONADA', 'CERRADA'].includes(status) ? 'incident.resolved' : 'incident.status.changed';
-  const notification = await outbox(type, updated, cause);
+  const notification = await outbox(type, updated, cause, {
+    ...(Number.isFinite(updates.tiempoResolucionMinutos) ? { resolution_minutes: updates.tiempoResolucionMinutos } : {}),
+    ...(updated.impacto?.criticality ? { criticality: updated.impacto.criticality } : {}),
+  });
   const actions = [
     { Put: { TableName: process.env.INCIDENTES_TABLE, Item: updated, ConditionExpression: 'revision = :r', ExpressionAttributeValues: { ':r': incident.revision || 0 } } },
     { Put: { TableName: process.env.OUTBOX_TABLE, Item: notification } },
@@ -156,7 +178,7 @@ async function maybeResolve(incident, cause, overrides = {}) {
   return false;
 }
 
-async function startWorkflow(zone, cause, antennas, retry = 0, triggerReport, problemType) {
+async function startWorkflow(zone, cause, antennas, retry = 0, triggerReport, problemType, recurrence = null) {
   let state = await get(process.env.STATE_TABLE, { state_key: 'ZONE#' + zone });
   if (state?.active_incident && state.phase !== 'STARTING' && !retry) return state.active_incident;
   if (!state?.active_incident) {
@@ -169,11 +191,53 @@ async function startWorkflow(zone, cause, antennas, retry = 0, triggerReport, pr
     state = await get(process.env.STATE_TABLE, { state_key: 'ZONE#' + zone });
   }
   const input = { zona: zone, incidenteId: state.active_incident, antenna_ids: antennas.map(antenna => antenna.antenna_id),
-    antenas_estado: antennas, cause_event_id: cause, attempt: retry, trigger_reporte_id: triggerReport, tipoProblema: problemType };
+    antenas_estado: antennas, cause_event_id: cause, attempt: retry, trigger_reporte_id: triggerReport, tipoProblema: problemType,
+    ...(recurrence ? { recurrencia: recurrence } : {}) };
   try { await sfn.send(new StartExecutionCommand({ stateMachineArn: process.env.STATE_MACHINE_ARN,
     name: state.active_incident + (retry ? '-retry-' + retry : ''), input: JSON.stringify(input) })); }
   catch (error) { if (error.name !== 'ExecutionAlreadyExists') throw error; }
   return state.active_incident;
+}
+
+async function recordAntennaFailure(antennaId, envelope) {
+  const data = envelope.data;
+  if (!BAD_ANTENNA_STATES.has(data.current_status) || BAD_ANTENNA_STATES.has(data.previous_status)) return null;
+  const occurredAt = new Date(envelope.occurred_at);
+  if (!Number.isFinite(occurredAt.getTime())) throw new Error('InvalidTelemetryTimestamp');
+  const configuredWindow = Number(process.env.RECURRENT_ANTENNA_WINDOW_DAYS);
+  const windowDays = Number.isInteger(configuredWindow) && configuredWindow >= 2 ? Math.min(31, configuredWindow) : 7;
+  const day = occurredAt.toISOString().slice(0, 10);
+  const dayKey = `ANTENNA-FAIL#${antennaId}#DAY#${day}`;
+  const markerKey = { state_key: `ANTENNA-FAIL#${antennaId}#EVENT#${hash(envelope.event_id)}` };
+  const expiresAt = Math.floor(Date.now() / 1000) + (windowDays + 2) * 86400;
+  try {
+    await ddb.send(new TransactWriteCommand({ TransactItems: [
+      { Put: { TableName: process.env.STATE_TABLE, Item: { ...markerKey, expires_at: expiresAt }, ConditionExpression: 'attribute_not_exists(state_key)' } },
+      { Update: { TableName: process.env.STATE_TABLE, Key: { state_key: dayKey },
+        UpdateExpression: 'SET expires_at = :expires ADD failure_count :one',
+        ExpressionAttributeValues: { ':expires': expiresAt, ':one': 1 } } },
+    ] }));
+  } catch (error) {
+    if (!['TransactionCanceledException', 'ConditionalCheckFailedException'].includes(error.name)) throw error;
+    if (!await get(process.env.STATE_TABLE, markerKey)) throw error;
+  }
+
+  let events = 0;
+  const days = [];
+  for (let offset = 0; offset < windowDays; offset += 1) {
+    const date = new Date(occurredAt.getTime() - offset * 86400000).toISOString().slice(0, 10);
+    const daily = await get(process.env.STATE_TABLE, { state_key: `ANTENNA-FAIL#${antennaId}#DAY#${date}` });
+    if (daily?.failure_count) {
+      events += Number(daily.failure_count);
+      days.push(date);
+    }
+  }
+  const configuredEvents = Number(process.env.RECURRENT_ANTENNA_MIN_EVENTS);
+  const configuredDays = Number(process.env.RECURRENT_ANTENNA_MIN_DAYS);
+  const minEvents = Number.isInteger(configuredEvents) && configuredEvents >= 2 ? configuredEvents : 3;
+  const minDays = Number.isInteger(configuredDays) && configuredDays >= 2 ? Math.min(windowDays, configuredDays) : 2;
+  if (events < minEvents || days.length < minDays) return null;
+  return { antenna_id: antennaId, failure_events: events, affected_days: days.length, window_days: windowDays };
 }
 
 async function processEnvelope(envelope) {
@@ -298,21 +362,24 @@ async function processEnvelope(envelope) {
       }
       return;
     }
-    const reports = await reportsInZone(zone, report.problem_type || 'GENERAL');
-    if (!reports.some(item => item.reporteId === data.report_id)) reports.push({ reporteId: data.report_id, userId: report.user_id });
+    const threshold = Math.max(1, Number(process.env.COLLECTIVE_REPORT_THRESHOLD || 10));
+    const reporterCount = await distinctReportersInZone(zone, report.problem_type || 'GENERAL', threshold);
     const antennas = await zoneAntennas(zone);
-    if (new Set(reports.map(item => item.userId)).size >= Number(process.env.COLLECTIVE_REPORT_THRESHOLD || 10)
+    if (reporterCount >= threshold
       || ai.es_infraestructura_critica === true || antennas.some(antenna => ['DOWN', 'DISABLED', 'SATURATED'].includes(antenna.status))) {
       await startWorkflow(zone, envelope.event_id, antennas, 0, data.report_id, report.problem_type || 'GENERAL');
     }
     return;
   }
+  const recurrence = envelope.source === 'network-telemetry' ? await recordAntennaFailure(data.antenna_id, envelope) : null;
   const antennas = await zoneAntennas(zone);
   const state = await get(process.env.STATE_TABLE, { state_key: 'ZONE#' + zone });
   if (state?.active_incident) {
     const incident = await get(process.env.INCIDENTES_TABLE, { incidenteId: state.active_incident });
     if (incident) await maybeResolve(incident, envelope.event_id);
-  } else if (antennas.some(antenna => ['DOWN', 'DISABLED', 'SATURATED'].includes(antenna.status))) await startWorkflow(zone, envelope.event_id, antennas);
+  } else if (recurrence && antennas.some(antenna => antenna.antenna_id === recurrence.antenna_id && BAD_ANTENNA_STATES.has(antenna.status))) {
+    await startWorkflow(zone, envelope.event_id, antennas, 0, undefined, 'PREVENTIVE_MAINTENANCE', recurrence);
+  } else if (antennas.some(antenna => BAD_ANTENNA_STATES.has(antenna.status))) await startWorkflow(zone, envelope.event_id, antennas);
 }
 
 exports.handler = async (event) => {
@@ -332,6 +399,8 @@ exports.handler = async (event) => {
         Item: { ...key, owner, status: 'PROCESSING', lock_until: Math.floor(Date.now() / 1000) + 120, expires_at: Math.floor(Date.now() / 1000) + 2592000 },
         ConditionExpression: 'attribute_not_exists(state_key) OR lock_until < :t', ExpressionAttributeValues: { ':t': Math.floor(Date.now() / 1000) } })); }
       catch (error) { if (error.name === 'ConditionalCheckFailedException') throw new Error('ConcurrentEventProcessing'); throw error; }
+      try { await projectMetric(envelope); }
+      catch (error) { console.error('metric_projection_failed', error.name); }
       await processEnvelope(envelope);
       await ddb.send(new UpdateCommand({ TableName: process.env.STATE_TABLE, Key: key, UpdateExpression: 'SET #s = :s REMOVE lock_until',
         ConditionExpression: '#o = :o', ExpressionAttributeNames: { '#s': 'status', '#o': 'owner' }, ExpressionAttributeValues: { ':s': 'COMPLETED', ':o': owner } }));

@@ -7,9 +7,11 @@ const { SignatureV4 } = require('@smithy/signature-v4');
 const { HttpRequest } = require('@smithy/protocol-http');
 const { Sha256 } = require('@aws-crypto/sha256-js');
 const { defaultProvider } = require('@aws-sdk/credential-provider-node');
+const { projectMetric } = require('../lib/projectMetric');
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), { marshallOptions: { removeUndefinedValues: true } });
 const events = new EventBridgeClient({});
 const sqs = new SQSClient({});
+
 async function projectReport(reportId, envelope) {
   const report = (await ddb.send(new GetCommand({ TableName: process.env.REPORTES_TABLE, Key: { reporteId: reportId }, ConsistentRead: true }))).Item;
   if (!report) throw new Error('ProjectionReportMissing');
@@ -48,11 +50,15 @@ exports.handler = async event => {
   for (const record of event.Records || []) {
     if (record.eventName !== 'INSERT') continue;
     const item = unmarshall(record.dynamodb.NewImage);
+    const detail = item.legacy_detail ? item.detail : item.envelope;
+    if (!item.legacy_detail) {
+      try { await projectMetric(detail); }
+      catch (error) { console.error('metric_projection_failed', error.name); }
+    }
     if (item.destination === 'INCIDENT_INPUT') {
       await sqs.send(new SendMessageCommand({ QueueUrl: process.env.INCIDENT_INPUT_QUEUE_URL, MessageBody: JSON.stringify(item.envelope) }));
       continue;
     }
-    const detail = item.legacy_detail ? item.detail : item.envelope;
     if (!item.legacy_detail) {
       for (let offset = 0; offset < (item.report_ids || []).length; offset += 10) await Promise.all(item.report_ids.slice(offset, offset + 10).map(report => projectReport(report, detail)));
     }

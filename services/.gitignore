@@ -27,8 +27,12 @@
 !/incidents-report/src/handlers/stepFunctions/
 /incidents-report/src/handlers/stepFunctions/*
 !/incidents-report/src/handlers/stepFunctions/*.js
+!/incidents-report/src/lib/
+/incidents-report/src/lib/*
+!/incidents-report/src/lib/*.js
 !/EC2_Y_POSTMAN.md
 !/REPORTE_REVISION_MAIN_Y_ORACLE.md
+!/ARQUITECTURA_Y_OPERACION.md
 !/postman/
 /postman/*
 !/postman/RedTeleCorp.postman_collection.json

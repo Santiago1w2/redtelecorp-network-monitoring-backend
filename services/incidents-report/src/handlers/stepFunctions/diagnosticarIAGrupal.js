@@ -84,5 +84,11 @@ exports.handler = async event => {
     diagnosticoIA = { causa_raiz_probable: 'Diagnostico IA desactivado; incidente detectado por reglas de reportes/telemetria.',
       requiere_cuadrilla_campo: true, riesgo_estructural: 'MEDIO', mensaje_notificacion_usuario: 'Nuestro equipo evalua la incidencia.', analysis_method: 'RULES_AI_DISABLED' };
   }
+  if (event.recurrencia) {
+    diagnosticoIA.requiere_cuadrilla_campo = true;
+    diagnosticoIA.riesgo_estructural = 'ALTO';
+    diagnosticoIA.causa_raiz_probable = `Falla recurrente: ${event.recurrencia.failure_events} eventos en ${event.recurrencia.affected_days} dias dentro de ${event.recurrencia.window_days} dias. ${diagnosticoIA.causa_raiz_probable}`.slice(0, 1500);
+    diagnosticoIA.analysis_method = `${diagnosticoIA.analysis_method || 'RULES'}_RECURRENCE_RULE`;
+  }
   return { ...event, diagnosticoIA };
 };

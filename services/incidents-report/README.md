@@ -1,5 +1,7 @@
 # Reportes e incidentes: flujo integrado
 
+Arquitectura, métricas por múltiples zonas y señal de antenas recurrentes: [`../ARQUITECTURA_Y_OPERACION.md`](../ARQUITECTURA_Y_OPERACION.md).
+
 `incidents-report` (05) es el propietario can?nico de reportes e incidentes. Se integr? `feature/access-ia-incidents` en `integration/access-ia-full-flow`, conservando la cola com?n, el outbox y las conexiones de 03/04/08/09. `MICROSERVICIO 7` es legado opcional; el despliegue inicial no lo activa.
 
 ## API p?blica
@@ -21,7 +23,7 @@ Todas las rutas requieren Cognito del User Pool de Identity. Un cliente solo con
 Ejemplo de registro:
 
 ```json
-{"numeroServicio":"DEMO-001","zona":"ZONE-001","tipoProblema":"NO_SIGNAL","descripcion":"Sin se?al"}
+{"numeroServicio":"DEMO-001","zona":"ZONE-001","fechaHora":"2026-11-15T12:30:00.000Z","tipoProblema":"NO_SIGNAL","descripcion":"Sin se?al"}
 ```
 
 `Idempotency-Key` permite reintentar el registro sin crear otro reporte. `userId` se toma del token, no del body. La evidencia opcional acepta im?genes JPEG/PNG/WebP base64 de hasta 60000 caracteres. No se acepta telemetr?a del cliente como fuente confiable.

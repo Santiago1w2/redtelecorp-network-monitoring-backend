@@ -20,6 +20,9 @@ provider:
     COVERAGE_API_URL: ${param:coverageApiUrl, ''}
     TELEMETRY_API_URL: ${param:telemetryApiUrl, ''}
     COLLECTIVE_REPORT_THRESHOLD: ${param:collectiveReportThreshold, '10'}
+    RECURRENT_ANTENNA_MIN_EVENTS: ${param:recurrentAntennaMinEvents, '3'}
+    RECURRENT_ANTENNA_MIN_DAYS: ${param:recurrentAntennaMinDays, '2'}
+    RECURRENT_ANTENNA_WINDOW_DAYS: ${param:recurrentAntennaWindowDays, '7'}
     REQUIRED_FIELD_SKILL: ${param:requiredFieldSkill, 'NETWORK'}
     INCIDENT_INPUT_QUEUE_URL:
       Fn::Sub: https://sqs.${AWS::Region}.amazonaws.com/${AWS::AccountId}/rtc-incidents-input-${sls:stage}
@@ -31,6 +34,7 @@ provider:
     GCP_WIF_AUDIENCE: ${param:gcpWifAudience, ""}
     GCP_INVOKER_SERVICE_ACCOUNT: ${param:gcpInvokerServiceAccount, ""}
     RECIPIENTS_TABLE: telecorp-incidents-service-recipients-${sls:stage}
+    METRICS_TABLE: telecorp-incidents-service-metrics-${sls:stage}
     LEGACY_REPORTS_API_URL: ${param:legacyReportsApiUrl, ""}
   iam:
     role: arn:aws:iam::573505212581:role/LabRole
@@ -131,6 +135,8 @@ functions:
   sfDiagnosticarIAGrupal:
     handler: src/handlers/stepFunctions/diagnosticarIAGrupal.handler
     timeout: 30
+  sfDiagnosticoFallback:
+    handler: src/handlers/stepFunctions/diagnosticoFallback.handler
   sfGuardarIncidenteColectivo:
     handler: src/handlers/stepFunctions/guardarIncidenteColectivo.handler
   sfDespacharCuadrillaYNotificar:
@@ -305,14 +311,11 @@ stepFunctions:
               MaxAttempts: 5
               BackoffRate: 2.0
           DiagnosticoFallback:
-            Type: Pass
-            Result:
-              causa_raiz_probable: Diagnostico automatico no disponible; requiere verificacion operativa.
-              riesgo_estructural: MEDIO
-              requiere_cuadrilla_campo: true
-              mensaje_notificacion_usuario: Nuestro equipo esta evaluando una incidencia en tu zona.
-              analysis_method: RULES_AI_UNAVAILABLE
-            ResultPath: $.diagnosticoIA
+            Type: Task
+            Resource:
+              Fn::GetAtt:
+              - sfDiagnosticoFallback
+              - Arn
             Next: GuardarIncidenteColectivo
 resources:
   Resources:
@@ -452,6 +455,28 @@ resources:
         KeySchema:
         - AttributeName: state_key
           KeyType: HASH
+        TimeToLiveSpecification:
+          AttributeName: expires_at
+          Enabled: true
+        SSESpecification:
+          SSEEnabled: true
+    MetricsAggregatesTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:provider.environment.METRICS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+        - AttributeName: period
+          AttributeType: S
+        - AttributeName: metric_key
+          AttributeType: S
+        KeySchema:
+        - AttributeName: period
+          KeyType: HASH
+        - AttributeName: metric_key
+          KeyType: RANGE
         TimeToLiveSpecification:
           AttributeName: expires_at
           Enabled: true
@@ -606,5 +631,6 @@ package:
   patterns:
   - '!**'
   - src/handlers/**/*.js
+  - src/lib/*.js
   - node_modules/**
   - '!node_modules/serverless-step-functions/**'

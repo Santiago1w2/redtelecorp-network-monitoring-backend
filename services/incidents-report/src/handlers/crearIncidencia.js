@@ -37,16 +37,19 @@ exports.handler = async event => {
     const zone = identifier(body.zone_id || body.zona);
     const description = body.description || body.descripcion;
     const type = body.problem_type || body.tipoProblema || 'GENERAL';
+    const at = now();
     if (typeof description !== 'string' || !description.trim() || description.length > 1500 || typeof type !== 'string' || !/^[A-Z][A-Z0-9_]{0,63}$/.test(type)) throw new Error('InvalidReport');
-    if (body.numeroServicio !== undefined && (typeof body.numeroServicio !== 'string' || body.numeroServicio.length > 64)) throw new Error('InvalidService');
+    if (typeof body.numeroServicio !== 'string' || !body.numeroServicio.trim() || body.numeroServicio.length > 64) throw new Error('InvalidService');
+    const occurredAt = body.fechaHora || body.occurred_at || at;
+    const occurredDate = new Date(occurredAt);
+    if (typeof occurredAt !== 'string' || !Number.isFinite(occurredDate.getTime()) || occurredDate.getTime() > Date.now() + 5 * 60000) throw new Error('InvalidOccurredAt');
     if (body.imagen_base64 !== undefined && (typeof body.imagen_base64 !== 'string' || body.imagen_base64.length > 60000 || !/^[A-Za-z0-9+/]*={0,2}$/.test(body.imagen_base64) || !['image/jpeg', 'image/png', 'image/webp'].includes(body.imagen_mime_type))) throw new Error('InvalidImage');
     const idempotency = Object.entries(event.headers || {}).find(([key]) => key.toLowerCase() === 'idempotency-key')?.[1];
     if (idempotency && (typeof idempotency !== 'string' || idempotency.length > 128)) throw new Error('InvalidIdempotencyKey');
     const reporteId = 'REP-' + (idempotency ? hash(userId + ':' + idempotency).slice(0, 32) : crypto.randomUUID());
-    const at = now();
-    const payloadHash = hash(JSON.stringify({ zone, description, type, service: body.numeroServicio || '', image: body.imagen_base64 || '' }));
-    const item = { reporteId, userId, zona: zone, descripcion: description.trim(), tipoProblema: type, createdAt: at, updatedAt: at, estado: 'REGISTRADA', payload_hash: payloadHash,
-      ...(body.numeroServicio ? { numeroServicio: body.numeroServicio } : {}), ...(body.imagen_base64 ? { imagen_base64: body.imagen_base64, imagen_mime_type: body.imagen_mime_type } : {}) };
+    const payloadHash = hash(JSON.stringify({ zone, description, type, service: body.numeroServicio.trim(), occurredAt: occurredDate.toISOString(), image: body.imagen_base64 || '' }));
+    const item = { reporteId, userId, zona: zone, descripcion: description.trim(), tipoProblema: type, numeroServicio: body.numeroServicio.trim(), occurredAt: occurredDate.toISOString(), createdAt: at, updatedAt: at, estado: 'REGISTRADA', payload_hash: payloadHash,
+      ...(body.imagen_base64 ? { imagen_base64: body.imagen_base64, imagen_mime_type: body.imagen_mime_type } : {}) };
     const eventId = 'EVT-' + hash(reporteId + ':created');
     const envelope = { event_id: eventId, event_type: 'report.created', source: 'incident-management', occurred_at: at, version: '1.0', data: { report_id: reporteId, user_id: userId, zone_id: zone, problem_type: type } };
     try { await ddb.send(new TransactWriteCommand({ TransactItems: [

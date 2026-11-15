@@ -20,6 +20,10 @@ ORACLE_ENABLED="${ORACLE_ENABLED:-false}"
 DELIVERY_ENABLED="${DELIVERY_ENABLED:-false}"
 DEPLOY_LEGACY_REPORTS="${DEPLOY_LEGACY_REPORTS:-false}"
 GCP_AUTH_MODE="${GCP_AUTH_MODE:-WIF}"
+COLLECTIVE_REPORT_THRESHOLD="${COLLECTIVE_REPORT_THRESHOLD:-10}"
+RECURRENT_ANTENNA_MIN_EVENTS="${RECURRENT_ANTENNA_MIN_EVENTS:-3}"
+RECURRENT_ANTENNA_MIN_DAYS="${RECURRENT_ANTENNA_MIN_DAYS:-2}"
+RECURRENT_ANTENNA_WINDOW_DAYS="${RECURRENT_ANTENNA_WINDOW_DAYS:-7}"
 GCP_AI_API_KEY_PARAM="${GCP_AI_API_KEY_PARAM:-/telecorp/$STAGE/gcp/ai-api-key}"
 EVENT_BUS_NAME="${EVENT_BUS_NAME:-rtc-events-$STAGE}"
 CREATE_EVENT_BUS="${CREATE_EVENT_BUS:-auto}"
@@ -32,6 +36,12 @@ for flag in "$AI_ENABLED" "$ORACLE_ENABLED" "$DELIVERY_ENABLED" "$DEPLOY_LEGACY_
 done
 [[ "$AI_ENABLED" != true || -n "${GCP_AI_BASE_URL:-}" ]] || fail 'IA requiere GCP_AI_BASE_URL y clave en SSM SecureString o Secrets Manager.'
 [[ "$GCP_AUTH_MODE" == WIF || "$GCP_AUTH_MODE" == API_KEY ]] || fail 'GCP_AUTH_MODE debe ser WIF o API_KEY.'
+[[ "$COLLECTIVE_REPORT_THRESHOLD" =~ ^[1-9][0-9]{0,3}$ ]] || fail 'COLLECTIVE_REPORT_THRESHOLD debe ser un entero entre 1 y 9999.'
+[[ "$RECURRENT_ANTENNA_MIN_EVENTS" =~ ^([2-9]|[1-9][0-9]{1,2})$ ]] || fail 'RECURRENT_ANTENNA_MIN_EVENTS debe ser un entero entre 2 y 999.'
+[[ "$RECURRENT_ANTENNA_MIN_DAYS" =~ ^([2-9]|[1-9][0-9]{1,2})$ ]] || fail 'RECURRENT_ANTENNA_MIN_DAYS debe ser un entero entre 2 y 999.'
+[[ "$RECURRENT_ANTENNA_WINDOW_DAYS" =~ ^([2-9]|[1-9][0-9]{1,2})$ ]] || fail 'RECURRENT_ANTENNA_WINDOW_DAYS debe ser un entero entre 2 y 31.'
+(( RECURRENT_ANTENNA_WINDOW_DAYS <= 31 )) || fail 'RECURRENT_ANTENNA_WINDOW_DAYS no puede superar 31 dias.'
+(( RECURRENT_ANTENNA_MIN_DAYS <= RECURRENT_ANTENNA_WINDOW_DAYS )) || fail 'RECURRENT_ANTENNA_MIN_DAYS no puede superar la ventana de recurrencia.'
 [[ "$AI_ENABLED" != true || "$GCP_AUTH_MODE" != WIF || ( -n "${GCP_WIF_AUDIENCE:-}" && -n "${GCP_INVOKER_SERVICE_ACCOUNT:-}" ) ]] || fail 'Cloud Run privado requiere GCP_WIF_AUDIENCE y GCP_INVOKER_SERVICE_ACCOUNT.'
 [[ "$ORACLE_ENABLED" != true || -n "${ORACLE_SECRET_ARN:-}" ]] || fail 'Oracle requiere ORACLE_SECRET_ARN y red configurada.'
 [[ "$ORACLE_ENABLED" != true || ( -n "${ORACLE_SECURITY_GROUP_IDS:-}" && -n "${ORACLE_SUBNET_IDS:-}" ) ]] || fail 'Oracle requiere grupos de seguridad y subredes privadas con salida NAT; configurar ORACLE_SECURITY_GROUP_IDS y ORACLE_SUBNET_IDS.'
@@ -127,7 +137,7 @@ run_service() (
     reports) directory="$ROOT_DIR/../MICROSERVICIO 7" ;;
     field) directory="$ROOT_DIR/../MICROSERVICIO 8" ;;
     notifications) directory="$ROOT_DIR/notifications"; args+=("--param=deliveryEnabled=$DELIVERY_ENABLED" "--param=sesIdentity=${SES_IDENTITY:-unconfigured.invalid}"); [[ -z "$IDENTITY_URL" ]] || args+=("--param=identityApiUrl=$IDENTITY_URL"); [[ -z "$REPORTS_URL" ]] || args+=("--param=reportsApiUrl=$REPORTS_URL"); [[ -z "${SES_FROM_ADDRESS:-}" ]] || args+=("--param=sesFromAddress=$SES_FROM_ADDRESS") ;;
-    incidents) directory="$ROOT_DIR/incidents-report"; args+=("--param=aiEnabled=$AI_ENABLED" "--param=collectiveReportThreshold=${COLLECTIVE_REPORT_THRESHOLD:-10}" "--param=requiredFieldSkill=${REQUIRED_FIELD_SKILL:-NETWORK}" "--param=gcpAiApiKeyParam=$GCP_AI_API_KEY_PARAM" "--param=gcpAuthMode=$GCP_AUTH_MODE" "--param=gcpWifAudience=${GCP_WIF_AUDIENCE:-}" "--param=gcpInvokerServiceAccount=${GCP_INVOKER_SERVICE_ACCOUNT:-}");
+    incidents) directory="$ROOT_DIR/incidents-report"; args+=("--param=aiEnabled=$AI_ENABLED" "--param=collectiveReportThreshold=$COLLECTIVE_REPORT_THRESHOLD" "--param=recurrentAntennaMinEvents=$RECURRENT_ANTENNA_MIN_EVENTS" "--param=recurrentAntennaMinDays=$RECURRENT_ANTENNA_MIN_DAYS" "--param=recurrentAntennaWindowDays=$RECURRENT_ANTENNA_WINDOW_DAYS" "--param=requiredFieldSkill=${REQUIRED_FIELD_SKILL:-NETWORK}" "--param=gcpAiApiKeyParam=$GCP_AI_API_KEY_PARAM" "--param=gcpAuthMode=$GCP_AUTH_MODE" "--param=gcpWifAudience=${GCP_WIF_AUDIENCE:-}" "--param=gcpInvokerServiceAccount=${GCP_INVOKER_SERVICE_ACCOUNT:-}");
       [[ -z "$COVERAGE_URL" ]] || args+=("--param=coverageApiUrl=$COVERAGE_URL"); [[ -z "$TELEMETRY_URL" ]] || args+=("--param=telemetryApiUrl=$TELEMETRY_URL"); [[ -z "$LEGACY_REPORTS_URL" ]] || args+=("--param=legacyReportsApiUrl=$LEGACY_REPORTS_URL");
       [[ -z "${GCP_AI_BASE_URL:-}" ]] || args+=("--param=gcpAiBaseUrl=$GCP_AI_BASE_URL"); [[ -z "${GCP_AI_SECRET_ARN:-}" ]] || args+=("--param=gcpAiSecretArn=$GCP_AI_SECRET_ARN") ;;
     *) fail 'Servicio desconocido.' ;;
