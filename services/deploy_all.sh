@@ -19,6 +19,8 @@ AI_ENABLED="${AI_ENABLED:-false}"
 ORACLE_ENABLED="${ORACLE_ENABLED:-false}"
 DELIVERY_ENABLED="${DELIVERY_ENABLED:-false}"
 DEPLOY_LEGACY_REPORTS="${DEPLOY_LEGACY_REPORTS:-false}"
+NETWORK_MODE="${NETWORK_MODE:-existing}"
+ORACLE_TLS_PORT="${ORACLE_TLS_PORT:-1521}"
 GCP_AUTH_MODE="${GCP_AUTH_MODE:-WIF}"
 COLLECTIVE_REPORT_THRESHOLD="${COLLECTIVE_REPORT_THRESHOLD:-10}"
 RECURRENT_ANTENNA_MIN_EVENTS="${RECURRENT_ANTENNA_MIN_EVENTS:-3}"
@@ -44,7 +46,18 @@ done
 (( RECURRENT_ANTENNA_MIN_DAYS <= RECURRENT_ANTENNA_WINDOW_DAYS )) || fail 'RECURRENT_ANTENNA_MIN_DAYS no puede superar la ventana de recurrencia.'
 [[ "$AI_ENABLED" != true || "$GCP_AUTH_MODE" != WIF || ( -n "${GCP_WIF_AUDIENCE:-}" && -n "${GCP_INVOKER_SERVICE_ACCOUNT:-}" ) ]] || fail 'Cloud Run privado requiere GCP_WIF_AUDIENCE y GCP_INVOKER_SERVICE_ACCOUNT.'
 [[ "$ORACLE_ENABLED" != true || -n "${ORACLE_SECRET_ARN:-}" ]] || fail 'Oracle requiere ORACLE_SECRET_ARN y red configurada.'
-[[ "$ORACLE_ENABLED" != true || ( -n "${ORACLE_SECURITY_GROUP_IDS:-}" && -n "${ORACLE_SUBNET_IDS:-}" ) ]] || fail 'Oracle requiere grupos de seguridad y subredes privadas con salida NAT; configurar ORACLE_SECURITY_GROUP_IDS y ORACLE_SUBNET_IDS.'
+case "$NETWORK_MODE" in
+  existing)
+    [[ "${NETWORK_VPC_ID:-}" =~ ^vpc-[a-f0-9]+$ && "${ORACLE_SECURITY_GROUP_IDS:-}" =~ ^sg-[a-f0-9]+(,sg-[a-f0-9]+)*$ && "${ORACLE_SUBNET_IDS:-}" =~ ^subnet-[a-f0-9]+(,subnet-[a-f0-9]+)*$ && -n "${NETWORK_EGRESS_IP:-}" ]] || fail 'NETWORK_MODE=existing requiere NETWORK_VPC_ID, ORACLE_SECURITY_GROUP_IDS, ORACLE_SUBNET_IDS y NETWORK_EGRESS_IP. Copia el bloque de red del ejemplo.' ;;
+  create) ;;
+  *) fail 'NETWORK_MODE debe ser existing o create.' ;;
+esac
+[[ "$ORACLE_TLS_PORT" =~ ^[0-9]{1,5}$ ]] && (( 10#$ORACLE_TLS_PORT >= 1 && 10#$ORACLE_TLS_PORT <= 65535 )) || fail 'ORACLE_TLS_PORT debe estar entre 1 y 65535.'
+# Los IDs de comprobacion nunca se utilizan para desplegar Coverage.
+if [[ "$NETWORK_MODE" == create ]]; then
+  ORACLE_SECURITY_GROUP_IDS='sg-00000000000000000'
+  ORACLE_SUBNET_IDS='subnet-00000000000000000,subnet-00000000000000001'
+fi
 for tool in aws node npm "$SERVERLESS_BIN" "$PYTHON_BIN" uv; do need "$tool"; done
 export AWS_REGION AWS_DEFAULT_REGION="$AWS_REGION" AWS_PAGER='' AWS_CLI_AUTO_PROMPT=off
 AWS=(aws --region "$AWS_REGION")
@@ -125,10 +138,16 @@ PY
 run_service() (
   local service="$1" action="$2" directory stack
   local args=(--stage "$STAGE" --region "$AWS_REGION" "--param=frontendOrigin=$FRONTEND_ORIGIN" "--param=eventBusName=$EVENT_BUS_NAME")
-  if [[ "$service" != identity ]]; then
+  if [[ "$service" != identity && "$service" != network ]]; then
     args+=("--param=cognitoUserPoolArn=$POOL_ARN" "--param=cognitoUserPoolId=$POOL_ID" "--param=cognitoClientId=$CLIENT_ID")
   fi
   case "$service" in
+    network)
+      directory="$ROOT_DIR/network"
+      args+=("--param=networkMode=$NETWORK_MODE" "--param=oracleTlsPort=$ORACLE_TLS_PORT")
+      if [[ "$NETWORK_MODE" == existing ]]; then
+        args+=("--param=existingVpcId=$NETWORK_VPC_ID" "--param=existingSecurityGroupIds=$ORACLE_SECURITY_GROUP_IDS" "--param=existingSubnetIds=$ORACLE_SUBNET_IDS" "--param=existingEgressIp=$NETWORK_EGRESS_IP")
+      fi ;;
     identity) directory="$ROOT_DIR/identity-access"; args+=("--param=adminEmails=$ADMIN_EMAILS") ;;
     infrastructure) directory="$ROOT_DIR/../MICROSERVICIO 2" ;;
     telemetry) directory="$ROOT_DIR/network-telemetry"; args+=("--param=createEventBus=$CREATE_EVENT_BUS"); [[ -z "$INFRASTRUCTURE_URL" ]] || args+=("--param=infrastructureApiUrl=$INFRASTRUCTURE_URL") ;;
@@ -163,7 +182,7 @@ elif [[ "$ACTION" != check ]]; then
 else
   (cd -- "$ROOT_DIR/incidents-report" && npm ls --depth=0 > "$OUT/incidents-dependencies.txt")
 fi
-SELECTIONS=(identity telemetry infrastructure field coverage incidents notifications)
+SELECTIONS=(network identity telemetry infrastructure field coverage incidents notifications)
 [[ "$DEPLOY_LEGACY_REPORTS" != true ]] || SELECTIONS+=(reports)
 for selection in "${SELECTIONS[@]}"; do
   run_service "$selection" print > "$OUT/$selection-validation.txt"
@@ -174,6 +193,34 @@ if [[ "$ACTION" == package ]]; then
   printf '\nPaquetes de comprobación creados con IDs locales; deploy vuelve a construir con los IDs reales.\n'; exit 0
 fi
 
+# No cambiar el modo de un stack existente: quitar condiciones podria borrar su NAT/VPC.
+if "${AWS[@]}" cloudformation describe-stacks --stack-name "rtc-network-$STAGE" --query 'Stacks[0].Outputs' --output json > "$OUT/network-previous.json" 2>"$ERROR_FILE"; then
+  PREVIOUS_MODE="$("$PYTHON_BIN" - "$OUT/network-previous.json" <<'PY'
+import json,sys
+print(next((x['OutputValue'] for x in json.load(open(sys.argv[1])) if x['OutputKey']=='NetworkMode'), 'unknown'))
+PY
+)"
+  [[ "$PREVIOUS_MODE" == "$NETWORK_MODE" ]] || fail 'El stack de red tiene otro modo. Planifica la migracion; no se sustituira ni eliminara automaticamente.'
+elif [[ "$(<"$ERROR_FILE")" != *'does not exist'* ]]; then
+  cat "$ERROR_FILE" >&2
+  fail 'No fue posible comprobar el stack de red; no se creara otra red.'
+fi
+run_service network deploy
+"${AWS[@]}" cloudformation describe-stacks --stack-name "rtc-network-$STAGE" --query 'Stacks[0].Outputs' --output json > "$OUT/network.json"
+"$PYTHON_BIN" - "$OUT/network.json" "$OUT/network.env" <<'PY'
+import ipaddress,json,re,sys
+outputs={x['OutputKey']:x['OutputValue'] for x in json.load(open(sys.argv[1]))}
+patterns={'VpcId':r'vpc-[a-f0-9]+','SecurityGroupIds':r'sg-[a-f0-9]+(?:,sg-[a-f0-9]+)*','SubnetIds':r'subnet-[a-f0-9]+(?:,subnet-[a-f0-9]+)*'}
+for key,pattern in patterns.items():
+    if not re.fullmatch(pattern,outputs.get(key,'')): raise SystemExit('Salida de red invalida: '+key)
+    if '0000000000000000' in outputs[key]: raise SystemExit('La red devolvio IDs de validacion')
+ipaddress.IPv4Address(outputs['OracleEgressIp'])
+names={'NETWORK_VPC_ID':'VpcId','ORACLE_SECURITY_GROUP_IDS':'SecurityGroupIds','ORACLE_SUBNET_IDS':'SubnetIds','NETWORK_EGRESS_IP':'OracleEgressIp'}
+with open(sys.argv[2],'w') as result:
+    for name,key in names.items(): result.write(name+'='+outputs[key]+'\n')
+PY
+source "$OUT/network.env"
+printf 'Red lista | VPC %s | IP de salida para autorizar en Oracle: %s\n' "$NETWORK_VPC_ID" "$NETWORK_EGRESS_IP"
 run_service identity deploy
 POOL_ID="$("${AWS[@]}" ssm get-parameter --name "/telecorp/$STAGE/cognito/user-pool-id" --query Parameter.Value --output text)"
 CLIENT_ID="$("${AWS[@]}" ssm get-parameter --name "/telecorp/$STAGE/cognito/client-id" --query Parameter.Value --output text)"

@@ -72,3 +72,16 @@ EC2_Y_POSTMAN
 !/tests/
 /tests/*
 !/tests/test_sns_email_flow.py
+
+# Catalogo Postman de todos los endpoints.
+!/postman/RedTeleCorp.all-endpoints.postman_collection.json
+!/postman/RedTeleCorp.all-endpoints.postman_environment.json
+!/postman/prepare_all_endpoints_environment.py
+!/postman/00_Antes_de_probar.md
+
+# Servicio de red AWS y verificaciones de su despliegue.
+!/network/
+/network/*
+!/network/serverless.yml
+!/network/README.md
+!/tests/test_network_deployment.py
