@@ -33,7 +33,6 @@ redtelecorp-network-monitoring-backend/
     ├── customer-reports/             # 07 · Servicio legado, despliegue opcional
     ├── field-operations/             # 08 · Órdenes de trabajo
     ├── notifications/                # 09 · Notificaciones y correo SNS
-    ├── docs/                         # Guías de integración y demostración
     ├── postman/                      # Colecciones y entornos de pruebas
     ├── scripts/                      # Preparación de antenas y datos de evidencia
     ├── tests/                        # Pruebas de integración y despliegue
