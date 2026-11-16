@@ -1,0 +1,567 @@
+{
+  "info": {
+    "name": "Red TeleCorp - primera prueba completa",
+    "_postman_id": "c0793881-fc39-4ec3-8a0e-85557a7e0a08",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Usar un IdToken de admin confirmado. Ejecutar por etapas y esperar SQS/Streams/Step Functions en 08,11,13,17,19. No confundir HTTP 202 con procesamiento terminado. Solo datos ficticios e IN_APP. Flujo can?nico: 05 recibe reportes; 07 no se despliega por defecto. Las m?tricas requieren ?zona=.\n\nNotificaciones: EMAIL usa SNS con suscripción confirmada; IN_APP permanece disponible. SMS ya no se admite. Los administradores activos del grupo admin reciben copia de todas las notificaciones. DELIVERY_ENABLED=false no envía correos externos."
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{cognito_id_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.environment.set(\"telemetry_timestamp\",new Date().toISOString());"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "01 Crear estacion",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{infrastructure_base_url}}/stations",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"stationId\": \"{{station_id}}\",\n  \"name\": \"Estacion de prueba\",\n  \"zoneId\": \"{{zone_id}}\",\n  \"latitude\": -12.105,\n  \"longitude\": -77.035\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP esperado\", () => pm.expect(pm.response.code).to.be.oneOf([201, 409]));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "02 Crear antena",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{infrastructure_base_url}}/antennas",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"antenna_id\": \"{{antenna_id}}\",\n  \"stationId\": \"{{station_id}}\",\n  \"name\": \"Antena de prueba\",\n  \"technology\": \"4G\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP esperado\", () => pm.expect(pm.response.code).to.be.oneOf([201, 409]));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "03 Crear zona",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{coverage_base_url}}/v1/coverage/zones",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"zone_id\": \"{{zone_id}}\",\n  \"name\": \"Zona de prueba\",\n  \"zone_type\": \"HEALTHCARE\",\n  \"criticality\": \"HIGH\",\n  \"geometry\": {\n    \"type\": \"Polygon\",\n    \"coordinates\": [\n      [\n        [\n          -77.04,\n          -12.1\n        ],\n        [\n          -77.03,\n          -12.1\n        ],\n        [\n          -77.03,\n          -12.11\n        ],\n        [\n          -77.04,\n          -12.11\n        ],\n        [\n          -77.04,\n          -12.1\n        ]\n      ]\n    ]\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP esperado\", () => pm.expect(pm.response.code).to.be.oneOf([201, 409]));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "04 Asignar cobertura a zona",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{coverage_base_url}}/v1/coverage/antennas/{{antenna_id}}",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"latitude\": -12.105,\n  \"longitude\": -77.035,\n  \"coverage_radius_m\": 1500,\n  \"coverage_model\": \"ESTIMATED_CIRCLE\",\n  \"zone_id\": \"{{zone_id}}\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP esperado\", () => pm.expect(pm.response.code).to.be.oneOf([200]));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "05 Crear tecnico disponible",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{field_base_url}}/technicians",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"technicianId\": \"{{technician_id}}\",\n  \"name\": \"Tecnico de prueba\",\n  \"zoneId\": \"{{zone_id}}\",\n  \"skills\": [\n    \"NETWORK\"\n  ]\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP esperado\", () => pm.expect(pm.response.code).to.be.oneOf([201, 409]));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "06 Preferencias solo IN_APP",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{notifications_base_url}}/v1/notifications/preferences",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email_enabled\": false,\n  \"sms_enabled\": false,\n  \"in_app_enabled\": true,\n  \"incident_updates\": true\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP esperado\", () => pm.expect(pm.response.code).to.be.oneOf([200]));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "07 Telemetria NORMAL inicial",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{telemetry_base_url}}/v1/telemetry",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"antenna_id\": \"{{antenna_id}}\",\n  \"timestamp\": \"{{telemetry_timestamp}}\",\n  \"traffic_gb_min\": 80\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP esperado\", () => pm.expect(pm.response.code).to.be.oneOf([202]));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "08 Comprobar NORMAL esperar si esta procesando",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{telemetry_base_url}}/v1/telemetry/antennas/{{antenna_id}}/latest"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP esperado\", () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+              "pm.test(\"Estado NORMAL\", () => pm.expect(pm.response.json().status).to.equal(\"NORMAL\"));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "09 Crear reporte del usuario autenticado",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{incidents_base_url}}/incidencias",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"numeroServicio\": \"DEMO-001\",\n  \"zona\": \"{{zone_id}}\",\n  \"tipoProblema\": \"NO_SIGNAL\",\n  \"descripcion\": \"Reporte ficticio para validar integracion\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 202\",()=>pm.expect(pm.response.code).to.equal(202));",
+              "pm.environment.set(\"report_id\",pm.response.json().reporteId);",
+              "pm.environment.set(\"recipient_id\",pm.response.json().reporte.userId);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "10 Provocar DOWN",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{telemetry_base_url}}/v1/telemetry",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"antenna_id\": \"{{antenna_id}}\",\n  \"timestamp\": \"{{telemetry_timestamp}}\",\n  \"traffic_gb_min\": 20\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP esperado\", () => pm.expect(pm.response.code).to.be.oneOf([202]));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "11 Obtener incidente esperar orquestacion",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{incidents_base_url}}/incidencias?tipo=colectivos&zona={{zone_id}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP esperado\", () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+              "const rows=pm.response.json().incidentes||[]; pm.test(\"Incidente creado\",()=>pm.expect(rows.length).to.be.above(0)); if(rows.length) pm.environment.set(\"incident_id\",rows[0].incidenteId);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "12 Detalle del incidente",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{incidents_base_url}}/incidencias/{{incident_id}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP esperado\", () => pm.expect(pm.response.code).to.be.oneOf([200]));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "13 Obtener orden esperar asignacion",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{field_base_url}}/work-orders"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP esperado\", () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+              "const rows=(pm.response.json().workOrders||{}).items||[]; const row=rows.find(x=>x.incidentId===pm.environment.get(\"incident_id\")); pm.test(\"Orden creada\",()=>pm.expect(row).to.exist); if(row)pm.environment.set(\"work_order_id\",row.workOrderId);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "14 Notificacion manual valida contacto Identity",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{notifications_base_url}}/v1/notifications",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"recipient_id\": \"{{recipient_id}}\",\n  \"incident_id\": \"{{incident_id}}\",\n  \"template\": \"INCIDENT_DETECTED\",\n  \"channels\": [\n    \"IN_APP\"\n  ],\n  \"variables\": {\n    \"zone_name\": \"Zona de prueba\",\n    \"incident_status\": \"EN_REVISION\"\n  }\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP esperado\", () => pm.expect(pm.response.code).to.be.oneOf([202]));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "15 Recuperar trafico NORMAL",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{telemetry_base_url}}/v1/telemetry",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"antenna_id\": \"{{antenna_id}}\",\n  \"timestamp\": \"{{telemetry_timestamp}}\",\n  \"traffic_gb_min\": 80\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP esperado\", () => pm.expect(pm.response.code).to.be.oneOf([202]));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "16 Completar orden de campo",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{field_base_url}}/work-orders/{{work_order_id}}/status",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"status\": \"COMPLETED\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP esperado\", () => pm.expect(pm.response.code).to.be.oneOf([200]));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "17 Comprobar reporte resuelto esperar streams",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{incidents_base_url}}/incidencias/{{report_id}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP 200\",()=>pm.expect(pm.response.code).to.equal(200));",
+              "pm.test(\"Reporte SOLUCIONADA\",()=>pm.expect(pm.response.json().detalle.estado).to.equal(\"SOLUCIONADA\"));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "18 Comprobar incidente resuelto",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{incidents_base_url}}/incidencias/{{incident_id}}"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP esperado\", () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+              "pm.test(\"Incidente SOLUCIONADA\",()=>pm.expect(pm.response.json().detalle.estado).to.equal(\"SOLUCIONADA\"));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "19 Obtener notificacion de resolucion",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{notifications_base_url}}/v1/notifications"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP esperado\", () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+              "const rows=pm.response.json().notifications||[];const row=rows.find(x=>x.incident_id===pm.environment.get(\"incident_id\")&&x.template===\"INCIDENT_RESOLVED\");pm.test(\"Notificacion de resolucion\",()=>pm.expect(row).to.exist);if(row)pm.environment.set(\"notification_id\",row.notification_id);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "20 Marcar notificacion leida",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": "{{notifications_base_url}}/v1/notifications/{{notification_id}}/read"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"HTTP esperado\", () => pm.expect(pm.response.code).to.be.oneOf([200]));"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

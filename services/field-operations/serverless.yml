@@ -1,0 +1,252 @@
+# Configuracion del curso: proveedor, Lambdas, triggers y recursos.
+org: santiagomorales
+service: redtelecorp-field-operations
+frameworkVersion: '4'
+provider:
+  name: aws
+  region: us-east-1
+  stage: dev
+  runtime: python3.13
+  architecture: x86_64
+  memorySize: 256
+  timeout: 20
+  logRetentionInDays: 7
+  httpApi:
+    name: ${self:service}-${sls:stage}-api
+    cors:
+      allowedOrigins:
+      - ${param:frontendOrigin}
+      allowedHeaders:
+      - Content-Type
+      - Authorization
+      - Idempotency-Key
+      allowedMethods:
+      - GET
+      - POST
+      - PUT
+      - PATCH
+      - OPTIONS
+    authorizers:
+      cognito:
+        type: jwt
+        identitySource: $request.header.Authorization
+        issuerUrl: https://cognito-idp.${aws:region}.amazonaws.com/${param:cognitoUserPoolId}
+        audience:
+        - ${param:cognitoClientId}
+  environment:
+    TECHNICIANS_TABLE:
+      Ref: TechniciansTable
+    WORK_ORDERS_TABLE:
+      Ref: WorkOrdersTable
+    EVENT_BUS: default
+    SHARED_EVENT_BUS: ${param:eventBusName, 'rtc-events-${sls:stage}'}
+  iam:
+    role: arn:aws:iam::573505212581:role/LabRole
+functions:
+  fieldOperations:
+    name: ${self:service}-${sls:stage}
+    handler: field_operations.lambda_handler
+    events:
+    - httpApi:
+        method: POST
+        path: /technicians
+        authorizer:
+          name: cognito
+    - httpApi:
+        method: GET
+        path: /technicians
+        authorizer:
+          name: cognito
+    - httpApi:
+        method: GET
+        path: /technicians/{id}
+        authorizer:
+          name: cognito
+    - httpApi:
+        method: PATCH
+        path: /technicians/{id}
+        authorizer:
+          name: cognito
+    - httpApi:
+        method: POST
+        path: /work-orders
+        authorizer:
+          name: cognito
+    - httpApi:
+        method: GET
+        path: /work-orders
+        authorizer:
+          name: cognito
+    - httpApi:
+        method: GET
+        path: /work-orders/{id}
+        authorizer:
+          name: cognito
+    - httpApi:
+        method: POST
+        path: /work-orders/{id}/assign
+        authorizer:
+          name: cognito
+    - httpApi:
+        method: PATCH
+        path: /work-orders/{id}/status
+        authorizer:
+          name: cognito
+    - eventBridge:
+        pattern:
+          source:
+          - redtelecorp.incident-management
+          detail-type:
+          - IncidentNeedsTechnician
+  forwardEvents:
+    handler: forward_event.lambda_handler
+    events: []
+  publishPersistedEvents:
+    handler: publish_persisted_events.lambda_handler
+    timeout: 30
+resources:
+  Resources:
+    TechniciansTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${sls:stage}-technicians
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+        - AttributeName: technicianId
+          AttributeType: S
+        - AttributeName: zoneId
+          AttributeType: S
+        KeySchema:
+        - AttributeName: technicianId
+          KeyType: HASH
+        GlobalSecondaryIndexes:
+        - IndexName: zoneId-index
+          KeySchema:
+          - AttributeName: zoneId
+            KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+    WorkOrdersTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${sls:stage}-work-orders
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+        - AttributeName: workOrderId
+          AttributeType: S
+        KeySchema:
+        - AttributeName: workOrderId
+          KeyType: HASH
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+    ForwardFailureQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: rtc-field-operations-forward-failures-${sls:stage}
+        SqsManagedSseEnabled: true
+        MessageRetentionPeriod: 1209600
+    ForwardEventRetries:
+      Type: AWS::Lambda::EventInvokeConfig
+      Properties:
+        FunctionName:
+          Ref: ForwardEventsLambdaFunction
+        Qualifier: $LATEST
+        MaximumRetryAttempts: 2
+        MaximumEventAgeInSeconds: 21600
+        DestinationConfig:
+          OnFailure:
+            Destination:
+              Fn::GetAtt:
+              - ForwardFailureQueue
+              - Arn
+    SharedIncidentRule:
+      Type: AWS::Events::Rule
+      Properties:
+        Name: rtc-field-operations-shared-incident-${sls:stage}
+        EventBusName: ${param:eventBusName, 'rtc-events-${sls:stage}'}
+        EventPattern:
+          source:
+          - redtelecorp.incident-management
+          detail-type:
+          - IncidentNeedsTechnician
+        Targets:
+        - Id: FieldOperations
+          Arn:
+            Fn::GetAtt:
+            - FieldOperationsLambdaFunction
+            - Arn
+          RetryPolicy:
+            MaximumRetryAttempts: 10
+            MaximumEventAgeInSeconds: 86400
+          DeadLetterConfig:
+            Arn:
+              Fn::GetAtt:
+              - ForwardFailureQueue
+              - Arn
+    SharedIncidentPermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        FunctionName:
+          Ref: FieldOperationsLambdaFunction
+        Action: lambda:InvokeFunction
+        Principal: events.amazonaws.com
+        SourceArn:
+          Fn::GetAtt:
+          - SharedIncidentRule
+          - Arn
+    SharedIncidentFailurePolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        Queues:
+        - Ref: ForwardFailureQueue
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource:
+              Fn::GetAtt:
+              - ForwardFailureQueue
+              - Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn:
+                  Fn::GetAtt:
+                  - SharedIncidentRule
+                  - Arn
+    WorkOrderRetries:
+      Type: AWS::Lambda::EventInvokeConfig
+      Properties:
+        FunctionName:
+          Ref: FieldOperationsLambdaFunction
+        Qualifier: $LATEST
+        MaximumRetryAttempts: 2
+        MaximumEventAgeInSeconds: 21600
+        DestinationConfig:
+          OnFailure:
+            Destination:
+              Fn::GetAtt:
+              - ForwardFailureQueue
+              - Arn
+    PersistedEventMapping:
+      Type: AWS::Lambda::EventSourceMapping
+      Properties:
+        FunctionName:
+          Ref: PublishPersistedEventsLambdaFunction
+        EventSourceArn:
+          Fn::GetAtt:
+          - WorkOrdersTable
+          - StreamArn
+        StartingPosition: TRIM_HORIZON
+        BatchSize: 10
+        BisectBatchOnFunctionError: true
+        MaximumRetryAttempts: 10
+        MaximumRecordAgeInSeconds: 82800
+        DestinationConfig:
+          OnFailure:
+            Destination:
+              Fn::GetAtt:
+              - ForwardFailureQueue
+              - Arn

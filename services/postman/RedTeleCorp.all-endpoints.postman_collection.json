@@ -1,0 +1,3904 @@
+{
+  "info": {
+    "_postman_id": "46efbfa1-64f2-408a-b652-7594bd92d4ec",
+    "name": "Red TeleCorp - 64 endpoints + registro y login Cognito",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Catalogo de 64 rutas HTTP declaradas por los ocho serverless.yml: 54 actuales y 10 de 07 legado. Completar URLs reales e IdToken; rutas internas usan firma AWS IAM. No requiere frontend. Probar por etapas: no es un flujo secuencial garantizado porque existen dependencias y procesos asincronos. Usar datos ficticios; hay solicitudes que crean usuarios, cambian estados y pueden notificar administradores si el backend tiene DELIVERY_ENABLED=true. No se han ejecutado llamadas reales. Consultar 00_Antes_de_probar.md.\nIncluye 6 solicitudes adicionales de autenticacion AWS Cognito: no forman parte de las 64 rutas del backend."
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{cognito_id_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "const now = new Date();",
+          "pm.variables.set('request_timestamp', now.toISOString());",
+          "pm.variables.set('measurement_timestamp', now.toISOString());",
+          "pm.variables.set('telemetry_timestamp', now.toISOString());",
+          "pm.variables.set('previous_timestamp', new Date(now.getTime()-1000).toISOString());",
+          "if (!pm.environment.get('run_id')) pm.environment.set('run_id', String(Date.now()));",
+          "if (!pm.environment.get('from')) pm.environment.set('from', new Date(now.getTime()-86400000).toISOString());",
+          "if (!pm.environment.get('to')) pm.environment.set('to', new Date(now.getTime()+86400000).toISOString());"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "00 Registro y login - Cognito",
+      "description": "Ejecutar solicitudes individualmente: 01 registro, 02 confirmacion con codigo de correo, 03 login. Si ya existe la cuenta, empezar por 03. 04/05/06 son alternativas, no ejecutar toda la carpeta con Runner. Las respuestas guardan tokens y user_id automaticamente en el entorno local. Confirmacion por Cognito es independiente de SNS para notificaciones de incidentes.",
+      "auth": {
+        "type": "noauth"
+      },
+      "item": [
+        {
+          "name": "01 Registrarme (SignUp)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "noauth"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-amz-json-1.1"
+              },
+              {
+                "key": "X-Amz-Target",
+                "value": "AWSCognitoIdentityProviderService.SignUp"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ClientId\": \"{{cognito_client_id}}\",\n  \"Username\": \"{{auth_email}}\",\n  \"Password\": \"{{auth_password}}\",\n  \"UserAttributes\": [\n    {\n      \"Name\": \"email\",\n      \"Value\": \"{{auth_email}}\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "https://cognito-idp.{{aws_region}}.amazonaws.com/",
+            "description": "Crea tu usuario. Cognito envia un codigo a tu correo. No usar si ya tienes cuenta.\nEs una API de AWS Cognito, no una ruta de API Gateway. No requiere Bearer ni firma AWS. Las contrasenas/codigos se escriben solo en tu Postman local; no exportar un entorno con sus valores."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "for (const key of [\"cognito_client_id\", \"auth_email\", \"auth_password\"]) if (!pm.variables.get(key)) throw new Error('Completa la variable '+key+' en el entorno local');",
+                  "const payload = {\"ClientId\": pm.variables.get(\"cognito_client_id\"),\"Username\": pm.variables.get(\"auth_email\"),\"Password\": pm.variables.get(\"auth_password\")};",
+                  "payload.UserAttributes=[{Name:'email',Value:pm.variables.get('auth_email')}];",
+                  "pm.request.body.update(JSON.stringify(payload));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Cognito HTTP 200', () => pm.response.to.have.status(200));",
+                  "const result = pm.response.json();",
+                  "if (pm.response.code===200 && result.UserSub) pm.environment.set('user_id',result.UserSub);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "02 Confirmar correo (ConfirmSignUp)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "noauth"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-amz-json-1.1"
+              },
+              {
+                "key": "X-Amz-Target",
+                "value": "AWSCognitoIdentityProviderService.ConfirmSignUp"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ClientId\": \"{{cognito_client_id}}\",\n  \"Username\": \"{{auth_email}}\",\n  \"ConfirmationCode\": \"{{auth_confirmation_code}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "https://cognito-idp.{{aws_region}}.amazonaws.com/",
+            "description": "Escribir el codigo recibido por correo y enviar. El trigger postConfirmation asigna rol y crea el perfil.\nEs una API de AWS Cognito, no una ruta de API Gateway. No requiere Bearer ni firma AWS. Las contrasenas/codigos se escriben solo en tu Postman local; no exportar un entorno con sus valores."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "for (const key of [\"cognito_client_id\", \"auth_email\", \"auth_confirmation_code\"]) if (!pm.variables.get(key)) throw new Error('Completa la variable '+key+' en el entorno local');",
+                  "const payload = {\"ClientId\": pm.variables.get(\"cognito_client_id\"),\"Username\": pm.variables.get(\"auth_email\"),\"ConfirmationCode\": pm.variables.get(\"auth_confirmation_code\")};",
+                  "pm.request.body.update(JSON.stringify(payload));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Cognito HTTP 200', () => pm.response.to.have.status(200));",
+                  "const result = pm.response.json();"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "03 Iniciar sesion (InitiateAuth)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "noauth"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-amz-json-1.1"
+              },
+              {
+                "key": "X-Amz-Target",
+                "value": "AWSCognitoIdentityProviderService.InitiateAuth"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"AuthFlow\": \"USER_PASSWORD_AUTH\",\n  \"ClientId\": \"{{cognito_client_id}}\",\n  \"AuthParameters\": {\n    \"USERNAME\": \"{{auth_email}}\",\n    \"PASSWORD\": \"{{auth_password}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "https://cognito-idp.{{aws_region}}.amazonaws.com/",
+            "description": "Devuelve AuthenticationResult con tokens o un desafio. Si devuelve NEW_PASSWORD_REQUIRED, ejecutar 05.\nEs una API de AWS Cognito, no una ruta de API Gateway. No requiere Bearer ni firma AWS. Las contrasenas/codigos se escriben solo en tu Postman local; no exportar un entorno con sus valores."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.unset('cognito_id_token'); pm.environment.unset('cognito_access_token'); pm.environment.unset('cognito_refresh_token');",
+                  "for (const key of [\"cognito_client_id\", \"auth_email\", \"auth_password\"]) if (!pm.variables.get(key)) throw new Error('Completa la variable '+key+' en el entorno local');",
+                  "const payload = {AuthFlow:'USER_PASSWORD_AUTH', ClientId:pm.variables.get('cognito_client_id'), AuthParameters:{USERNAME:pm.variables.get('auth_email'),PASSWORD:pm.variables.get('auth_password')}};",
+                  "pm.request.body.update(JSON.stringify(payload));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Cognito HTTP 200', () => pm.response.to.have.status(200));",
+                  "const result = pm.response.json();",
+                  "if (pm.response.code===200 && result.AuthenticationResult) {",
+                  "const auth=result.AuthenticationResult;",
+                  "if(auth.IdToken) { pm.environment.set('cognito_id_token',auth.IdToken); const token=auth.IdToken.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'); const claims=JSON.parse(Buffer.from(token,'base64').toString('utf8')); pm.environment.set('user_id',claims.sub); }",
+                  "if(auth.AccessToken) pm.environment.set('cognito_access_token',auth.AccessToken);",
+                  "if(auth.RefreshToken) pm.environment.set('cognito_refresh_token',auth.RefreshToken);",
+                  "pm.environment.unset('cognito_auth_session');",
+                  "pm.environment.unset('cognito_challenge_name');",
+                  "} else if (pm.response.code===200 && result.ChallengeName) {",
+                  "pm.environment.unset('cognito_id_token');",
+                  "pm.environment.set('cognito_challenge_name',result.ChallengeName);",
+                  "pm.environment.set('cognito_auth_session',result.Session || '');",
+                  "pm.environment.set('cognito_challenge_username',(result.ChallengeParameters || {}).USER_ID_FOR_SRP || pm.variables.get('auth_email'));",
+                  "}",
+                  "if(pm.response.code===200) pm.test('Tokens o desafio explicito',()=>pm.expect(Boolean(result.AuthenticationResult || result.ChallengeName)).to.equal(true));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "04 Reenviar codigo (ResendConfirmationCode)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "noauth"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-amz-json-1.1"
+              },
+              {
+                "key": "X-Amz-Target",
+                "value": "AWSCognitoIdentityProviderService.ResendConfirmationCode"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ClientId\": \"{{cognito_client_id}}\",\n  \"Username\": \"{{auth_email}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "https://cognito-idp.{{aws_region}}.amazonaws.com/",
+            "description": "Solo si necesitas otro codigo de confirmacion.\nEs una API de AWS Cognito, no una ruta de API Gateway. No requiere Bearer ni firma AWS. Las contrasenas/codigos se escriben solo en tu Postman local; no exportar un entorno con sus valores."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "for (const key of [\"cognito_client_id\", \"auth_email\"]) if (!pm.variables.get(key)) throw new Error('Completa la variable '+key+' en el entorno local');",
+                  "const payload = {\"ClientId\": pm.variables.get(\"cognito_client_id\"),\"Username\": pm.variables.get(\"auth_email\")};",
+                  "pm.request.body.update(JSON.stringify(payload));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Cognito HTTP 200', () => pm.response.to.have.status(200));",
+                  "const result = pm.response.json();"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "05 Cambiar clave temporal (NEW_PASSWORD_REQUIRED)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "noauth"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-amz-json-1.1"
+              },
+              {
+                "key": "X-Amz-Target",
+                "value": "AWSCognitoIdentityProviderService.RespondToAuthChallenge"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"ChallengeName\": \"NEW_PASSWORD_REQUIRED\",\n  \"ClientId\": \"{{cognito_client_id}}\",\n  \"Session\": \"{{cognito_auth_session}}\",\n  \"ChallengeResponses\": {\n    \"USERNAME\": \"{{cognito_challenge_username}}\",\n    \"NEW_PASSWORD\": \"{{auth_new_password}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "https://cognito-idp.{{aws_region}}.amazonaws.com/",
+            "description": "Solo para cuentas con clave temporal creadas por un administrador. Si Cognito solicita atributos adicionales, agregarlos a ChallengeResponses segun ChallengeParameters.requiredAttributes.\nEs una API de AWS Cognito, no una ruta de API Gateway. No requiere Bearer ni firma AWS. Las contrasenas/codigos se escriben solo en tu Postman local; no exportar un entorno con sus valores."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if(pm.variables.get('cognito_challenge_name') !== 'NEW_PASSWORD_REQUIRED') throw new Error('Ejecuta Login y comprueba NEW_PASSWORD_REQUIRED antes de esta solicitud');",
+                  "for (const key of [\"cognito_client_id\", \"auth_email\", \"auth_new_password\", \"cognito_auth_session\"]) if (!pm.variables.get(key)) throw new Error('Completa la variable '+key+' en el entorno local');",
+                  "const payload = {ChallengeName:'NEW_PASSWORD_REQUIRED',ClientId:pm.variables.get('cognito_client_id'),Session:pm.variables.get('cognito_auth_session'),ChallengeResponses:{USERNAME:pm.variables.get('cognito_challenge_username') || pm.variables.get('auth_email'),NEW_PASSWORD:pm.variables.get('auth_new_password')}};",
+                  "pm.request.body.update(JSON.stringify(payload));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Cognito HTTP 200', () => pm.response.to.have.status(200));",
+                  "const result = pm.response.json();",
+                  "if (pm.response.code===200 && result.AuthenticationResult) {",
+                  "const auth=result.AuthenticationResult;",
+                  "if(auth.IdToken) { pm.environment.set('cognito_id_token',auth.IdToken); const token=auth.IdToken.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'); const claims=JSON.parse(Buffer.from(token,'base64').toString('utf8')); pm.environment.set('user_id',claims.sub); }",
+                  "if(auth.AccessToken) pm.environment.set('cognito_access_token',auth.AccessToken);",
+                  "if(auth.RefreshToken) pm.environment.set('cognito_refresh_token',auth.RefreshToken);",
+                  "pm.environment.unset('cognito_auth_session');",
+                  "pm.environment.unset('cognito_challenge_name');",
+                  "} else if (pm.response.code===200 && result.ChallengeName) {",
+                  "pm.environment.unset('cognito_id_token');",
+                  "pm.environment.set('cognito_challenge_name',result.ChallengeName);",
+                  "pm.environment.set('cognito_auth_session',result.Session || '');",
+                  "pm.environment.set('cognito_challenge_username',(result.ChallengeParameters || {}).USER_ID_FOR_SRP || pm.variables.get('auth_email'));",
+                  "}",
+                  "if(pm.response.code===200) pm.test('Tokens o desafio explicito',()=>pm.expect(Boolean(result.AuthenticationResult || result.ChallengeName)).to.equal(true));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "06 Renovar token (REFRESH_TOKEN_AUTH)",
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "noauth"
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-amz-json-1.1"
+              },
+              {
+                "key": "X-Amz-Target",
+                "value": "AWSCognitoIdentityProviderService.InitiateAuth"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"AuthFlow\": \"REFRESH_TOKEN_AUTH\",\n  \"ClientId\": \"{{cognito_client_id}}\",\n  \"AuthParameters\": {\n    \"REFRESH_TOKEN\": \"{{cognito_refresh_token}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "https://cognito-idp.{{aws_region}}.amazonaws.com/",
+            "description": "Renueva los tokens sin reenviar la contrasena. Requiere refresh token vigente y cliente sin rotacion de refresh tokens, como la plantilla actual.\nEs una API de AWS Cognito, no una ruta de API Gateway. No requiere Bearer ni firma AWS. Las contrasenas/codigos se escriben solo en tu Postman local; no exportar un entorno con sus valores."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "for (const key of [\"cognito_client_id\", \"cognito_refresh_token\"]) if (!pm.variables.get(key)) throw new Error('Completa la variable '+key+' en el entorno local');",
+                  "const payload = {AuthFlow:'REFRESH_TOKEN_AUTH',ClientId:pm.variables.get('cognito_client_id'),AuthParameters:{REFRESH_TOKEN:pm.variables.get('cognito_refresh_token')}};",
+                  "pm.request.body.update(JSON.stringify(payload));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Cognito HTTP 200', () => pm.response.to.have.status(200));",
+                  "const result = pm.response.json();",
+                  "if (pm.response.code===200 && result.AuthenticationResult) {",
+                  "const auth=result.AuthenticationResult;",
+                  "if(auth.IdToken) { pm.environment.set('cognito_id_token',auth.IdToken); const token=auth.IdToken.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'); const claims=JSON.parse(Buffer.from(token,'base64').toString('utf8')); pm.environment.set('user_id',claims.sub); }",
+                  "if(auth.AccessToken) pm.environment.set('cognito_access_token',auth.AccessToken);",
+                  "if(auth.RefreshToken) pm.environment.set('cognito_refresh_token',auth.RefreshToken);",
+                  "pm.environment.unset('cognito_auth_session');",
+                  "pm.environment.unset('cognito_challenge_name');",
+                  "} else if (pm.response.code===200 && result.ChallengeName) {",
+                  "pm.environment.unset('cognito_id_token');",
+                  "pm.environment.set('cognito_challenge_name',result.ChallengeName);",
+                  "pm.environment.set('cognito_auth_session',result.Session || '');",
+                  "pm.environment.set('cognito_challenge_username',(result.ChallengeParameters || {}).USER_ID_FOR_SRP || pm.variables.get('auth_email'));",
+                  "}",
+                  "if(pm.response.code===200) pm.test('Tokens o desafio explicito',()=>pm.expect(Boolean(result.AuthenticationResult || result.ChallengeName)).to.equal(true));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "01 Identity",
+      "description": "Probar individualmente tras preparar los datos; revisar requisitos de cada solicitud.",
+      "item": [
+        {
+          "name": "Publicos - Cognito",
+          "item": [
+            {
+              "name": "POST /auth/usuarios",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-identity-crearUsuario"
+                  }
+                ],
+                "url": "{{identity_base_url}}/auth/usuarios",
+                "description": "Fuente: services/identity-access/serverless.yml; funcion crearUsuario; handler src/handlers/crearUsuario.handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email\": \"{{test_user_email}}\",\n  \"password\": \"{{test_user_password}}\",\n  \"role\": \"clientes\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [\"run_account_changes\"].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('identity_base_url')) throw new Error('Configura identity_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [201]', () => pm.expect(pm.response.code).to.be.oneOf([201]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });",
+                      "if (pm.response.code >= 200 && pm.response.code < 300 && body) { for (const path of [\"userId\", \"user.userId\"]) { const v = path.split('.').reduce((x,k) => x && x[k], body); if (v) { pm.environment.set('target_user_id', String(v)); break; } } }"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "PUT /auth/usuarios/rol",
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-identity-asignarRol"
+                  }
+                ],
+                "url": "{{identity_base_url}}/auth/usuarios/rol",
+                "description": "Fuente: services/identity-access/serverless.yml; funcion asignarRol; handler src/handlers/asignarRol.handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"userId\": \"{{target_user_id}}\",\n  \"email\": \"{{test_user_email}}\",\n  \"nuevoRol\": \"clientes\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [\"run_account_changes\"].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('identity_base_url')) throw new Error('Configura identity_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /auth/perfil",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{identity_base_url}}/auth/perfil",
+                "description": "Fuente: services/identity-access/serverless.yml; funcion getProfile; handler src/handlers/getProfile.handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('identity_base_url')) throw new Error('Configura identity_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Internos - AWS IAM",
+          "item": [
+            {
+              "name": "GET /v1/identity/users/{user_id}/notification-contact",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{identity_base_url}}/v1/identity/users/{{user_id}}/notification-contact",
+                "description": "Fuente: services/identity-access/serverless.yml; funcion getNotificationContact; handler src/handlers/getNotificationContact.handler.\nFirma AWS Signature V4, servicio execute-api.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "auth": {
+                  "type": "awsv4",
+                  "awsv4": [
+                    {
+                      "key": "accessKey",
+                      "value": "{{aws_access_key_id}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "secretKey",
+                      "value": "{{aws_secret_access_key}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "sessionToken",
+                      "value": "{{aws_session_token}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "region",
+                      "value": "{{aws_region}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "service",
+                      "value": "execute-api",
+                      "type": "string"
+                    }
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('identity_base_url')) throw new Error('Configura identity_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('aws_access_key_id') || !pm.variables.get('aws_secret_access_key')) throw new Error('Faltan credenciales AWS temporales para firma IAM');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "02 Infrastructure",
+      "description": "Probar individualmente tras preparar los datos; revisar requisitos de cada solicitud.",
+      "item": [
+        {
+          "name": "Publicos - Cognito",
+          "item": [
+            {
+              "name": "POST /stations",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-infrastructure-networkInfrastructure"
+                  }
+                ],
+                "url": "{{infrastructure_base_url}}/stations",
+                "description": "Fuente: MICROSERVICIO 2/serverless.yml; funcion networkInfrastructure; handler network_infrastructure.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"stationId\": \"{{station_id}}\",\n  \"name\": \"Estacion de prueba\",\n  \"zoneId\": \"{{zone_id}}\",\n  \"latitude\": -12.105,\n  \"longitude\": -77.035\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('infrastructure_base_url')) throw new Error('Configura infrastructure_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [201]', () => pm.expect(pm.response.code).to.be.oneOf([201]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });",
+                      "if (pm.response.code >= 200 && pm.response.code < 300 && body) { for (const path of [\"stationId\"]) { const v = path.split('.').reduce((x,k) => x && x[k], body); if (v) { pm.environment.set('station_id', String(v)); break; } } }"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "POST /antennas",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-infrastructure-networkInfrastructure"
+                  }
+                ],
+                "url": "{{infrastructure_base_url}}/antennas",
+                "description": "Fuente: MICROSERVICIO 2/serverless.yml; funcion networkInfrastructure; handler network_infrastructure.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"antenna_id\": \"{{antenna_id}}\",\n  \"stationId\": \"{{station_id}}\",\n  \"name\": \"Antena de prueba\",\n  \"technology\": \"4G\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('infrastructure_base_url')) throw new Error('Configura infrastructure_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [201]', () => pm.expect(pm.response.code).to.be.oneOf([201]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });",
+                      "if (pm.response.code >= 200 && pm.response.code < 300 && body) { for (const path of [\"antenna_id\"]) { const v = path.split('.').reduce((x,k) => x && x[k], body); if (v) { pm.environment.set('antenna_id', String(v)); break; } } }"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /stations",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{infrastructure_base_url}}/stations",
+                "description": "Fuente: MICROSERVICIO 2/serverless.yml; funcion networkInfrastructure; handler network_infrastructure.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('infrastructure_base_url')) throw new Error('Configura infrastructure_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /stations/{id}",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{infrastructure_base_url}}/stations/{{station_id}}",
+                "description": "Fuente: MICROSERVICIO 2/serverless.yml; funcion networkInfrastructure; handler network_infrastructure.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('infrastructure_base_url')) throw new Error('Configura infrastructure_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "PATCH /stations/{id}",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-infrastructure-networkInfrastructure"
+                  }
+                ],
+                "url": "{{infrastructure_base_url}}/stations/{{station_id}}",
+                "description": "Fuente: MICROSERVICIO 2/serverless.yml; funcion networkInfrastructure; handler network_infrastructure.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.\nLa transicion debe ser valida para el estado actual; 409 no se cuenta como exito.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Estacion Postman actualizada\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('infrastructure_base_url')) throw new Error('Configura infrastructure_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /antennas",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{infrastructure_base_url}}/antennas",
+                "description": "Fuente: MICROSERVICIO 2/serverless.yml; funcion networkInfrastructure; handler network_infrastructure.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('infrastructure_base_url')) throw new Error('Configura infrastructure_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /antennas/{id}",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{infrastructure_base_url}}/antennas/{{antenna_id}}",
+                "description": "Fuente: MICROSERVICIO 2/serverless.yml; funcion networkInfrastructure; handler network_infrastructure.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('infrastructure_base_url')) throw new Error('Configura infrastructure_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "PATCH /antennas/{id}",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-infrastructure-networkInfrastructure"
+                  }
+                ],
+                "url": "{{infrastructure_base_url}}/antennas/{{antenna_id}}",
+                "description": "Fuente: MICROSERVICIO 2/serverless.yml; funcion networkInfrastructure; handler network_infrastructure.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.\nLa transicion debe ser valida para el estado actual; 409 no se cuenta como exito.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Antena Postman actualizada\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('infrastructure_base_url')) throw new Error('Configura infrastructure_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /stations/{id}/antennas",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{infrastructure_base_url}}/stations/{{station_id}}/antennas",
+                "description": "Fuente: MICROSERVICIO 2/serverless.yml; funcion networkInfrastructure; handler network_infrastructure.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('infrastructure_base_url')) throw new Error('Configura infrastructure_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Internos - AWS IAM",
+          "item": [
+            {
+              "name": "GET /v1/infrastructure/antennas/{antenna_id}",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{infrastructure_base_url}}/v1/infrastructure/antennas/{{antenna_id}}",
+                "description": "Fuente: MICROSERVICIO 2/serverless.yml; funcion networkInfrastructure; handler network_infrastructure.lambda_handler.\nFirma AWS Signature V4, servicio execute-api.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "auth": {
+                  "type": "awsv4",
+                  "awsv4": [
+                    {
+                      "key": "accessKey",
+                      "value": "{{aws_access_key_id}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "secretKey",
+                      "value": "{{aws_secret_access_key}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "sessionToken",
+                      "value": "{{aws_session_token}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "region",
+                      "value": "{{aws_region}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "service",
+                      "value": "execute-api",
+                      "type": "string"
+                    }
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('infrastructure_base_url')) throw new Error('Configura infrastructure_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('aws_access_key_id') || !pm.variables.get('aws_secret_access_key')) throw new Error('Faltan credenciales AWS temporales para firma IAM');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "04 Coverage",
+      "description": "Probar individualmente tras preparar los datos; revisar requisitos de cada solicitud.",
+      "item": [
+        {
+          "name": "Publicos - Cognito",
+          "item": [
+            {
+              "name": "POST /v1/coverage/zones",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-coverage-postZone"
+                  }
+                ],
+                "url": "{{coverage_base_url}}/v1/coverage/zones",
+                "description": "Fuente: services/coverage-geospatial/serverless.yml; funcion postZone; handler handlers.post_zone.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"zone_id\": \"{{zone_id}}\",\n  \"name\": \"Zona de prueba\",\n  \"zone_type\": \"HEALTHCARE\",\n  \"criticality\": \"HIGH\",\n  \"geometry\": {\n    \"type\": \"Polygon\",\n    \"coordinates\": [\n      [\n        [\n          -77.04,\n          -12.1\n        ],\n        [\n          -77.03,\n          -12.1\n        ],\n        [\n          -77.03,\n          -12.11\n        ],\n        [\n          -77.04,\n          -12.11\n        ],\n        [\n          -77.04,\n          -12.1\n        ]\n      ]\n    ]\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('coverage_base_url')) throw new Error('Configura coverage_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [201]', () => pm.expect(pm.response.code).to.be.oneOf([201]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "POST /v1/coverage/impact-analysis",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-coverage-postImpactAnalysis"
+                  }
+                ],
+                "url": "{{coverage_base_url}}/v1/coverage/impact-analysis",
+                "description": "Fuente: services/coverage-geospatial/serverless.yml; funcion postImpactAnalysis; handler handlers.post_impact_analysis.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"antenna_ids\": [\n    \"{{antenna_id}}\"\n  ],\n  \"incident_id\": \"{{incident_id}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('coverage_base_url')) throw new Error('Configura coverage_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [201]', () => pm.expect(pm.response.code).to.be.oneOf([201]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });",
+                      "if (pm.response.code === 200 && body) pm.test('Estado Oracle explicito', () => pm.expect(body.oracle_status).to.be.oneOf(['DISABLED','FALLBACK_LOCAL','VERIFIED_REQUEST']));",
+                      "if (String(pm.variables.get('require_oracle')) === 'true' && pm.response.code === 200 && body) pm.test('Oracle verificado en esta solicitud', () => pm.expect(body.oracle_status).to.equal('VERIFIED_REQUEST'));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /v1/coverage/antennas",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{coverage_base_url}}/v1/coverage/antennas?bbox={{bbox}}&limit={{limit}}",
+                "description": "Fuente: services/coverage-geospatial/serverless.yml; funcion getCoverageAntennas; handler handlers.get_coverage_antennas.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('coverage_base_url')) throw new Error('Configura coverage_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /v1/coverage/zones",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{coverage_base_url}}/v1/coverage/zones?bbox={{bbox}}&limit={{limit}}",
+                "description": "Fuente: services/coverage-geospatial/serverless.yml; funcion getZones; handler handlers.get_zones.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('coverage_base_url')) throw new Error('Configura coverage_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /v1/coverage/antennas/{antennaId}",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{coverage_base_url}}/v1/coverage/antennas/{{antenna_id}}",
+                "description": "Fuente: services/coverage-geospatial/serverless.yml; funcion getAntennaCoverage; handler handlers.get_antenna_coverage.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('coverage_base_url')) throw new Error('Configura coverage_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /v1/coverage/zones/{zoneId}",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{coverage_base_url}}/v1/coverage/zones/{{zone_id}}",
+                "description": "Fuente: services/coverage-geospatial/serverless.yml; funcion getZone; handler handlers.get_zone.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('coverage_base_url')) throw new Error('Configura coverage_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "PUT /v1/coverage/antennas/{antennaId}",
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-coverage-putAntennaCoverage"
+                  }
+                ],
+                "url": "{{coverage_base_url}}/v1/coverage/antennas/{{antenna_id}}",
+                "description": "Fuente: services/coverage-geospatial/serverless.yml; funcion putAntennaCoverage; handler handlers.put_antenna_coverage.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"latitude\": -12.105,\n  \"longitude\": -77.035,\n  \"coverage_radius_m\": 1500,\n  \"coverage_model\": \"ESTIMATED_CIRCLE\",\n  \"zone_id\": \"{{zone_id}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('coverage_base_url')) throw new Error('Configura coverage_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Internos - AWS IAM",
+          "item": [
+            {
+              "name": "POST /v1/internal/coverage/impact-analysis",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-coverage-postInternalImpactAnalysis"
+                  }
+                ],
+                "url": "{{coverage_base_url}}/v1/internal/coverage/impact-analysis",
+                "description": "Fuente: services/coverage-geospatial/serverless.yml; funcion postInternalImpactAnalysis; handler handlers.post_internal_impact_analysis.lambda_handler.\nFirma AWS Signature V4, servicio execute-api.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "auth": {
+                  "type": "awsv4",
+                  "awsv4": [
+                    {
+                      "key": "accessKey",
+                      "value": "{{aws_access_key_id}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "secretKey",
+                      "value": "{{aws_secret_access_key}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "sessionToken",
+                      "value": "{{aws_session_token}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "region",
+                      "value": "{{aws_region}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "service",
+                      "value": "execute-api",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"antenna_ids\": [\n    \"{{antenna_id}}\"\n  ],\n  \"incident_id\": \"{{incident_id}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [\"run_internal_writes\"].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('coverage_base_url')) throw new Error('Configura coverage_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('aws_access_key_id') || !pm.variables.get('aws_secret_access_key')) throw new Error('Faltan credenciales AWS temporales para firma IAM');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [201]', () => pm.expect(pm.response.code).to.be.oneOf([201]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });",
+                      "if (pm.response.code === 200 && body) pm.test('Estado Oracle explicito', () => pm.expect(body.oracle_status).to.be.oneOf(['DISABLED','FALLBACK_LOCAL','VERIFIED_REQUEST']));",
+                      "if (String(pm.variables.get('require_oracle')) === 'true' && pm.response.code === 200 && body) pm.test('Oracle verificado en esta solicitud', () => pm.expect(body.oracle_status).to.equal('VERIFIED_REQUEST'));"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /v1/internal/coverage/antennas/{antenna_id}",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{coverage_base_url}}/v1/internal/coverage/antennas/{{antenna_id}}",
+                "description": "Fuente: services/coverage-geospatial/serverless.yml; funcion getInternalAntennaCoverage; handler handlers.get_internal_antenna_coverage.lambda_handler.\nFirma AWS Signature V4, servicio execute-api.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "auth": {
+                  "type": "awsv4",
+                  "awsv4": [
+                    {
+                      "key": "accessKey",
+                      "value": "{{aws_access_key_id}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "secretKey",
+                      "value": "{{aws_secret_access_key}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "sessionToken",
+                      "value": "{{aws_session_token}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "region",
+                      "value": "{{aws_region}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "service",
+                      "value": "execute-api",
+                      "type": "string"
+                    }
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('coverage_base_url')) throw new Error('Configura coverage_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('aws_access_key_id') || !pm.variables.get('aws_secret_access_key')) throw new Error('Faltan credenciales AWS temporales para firma IAM');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /v1/internal/coverage/zones/{zone_id}/antennas",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{coverage_base_url}}/v1/internal/coverage/zones/{{zone_id}}/antennas?limit={{limit}}",
+                "description": "Fuente: services/coverage-geospatial/serverless.yml; funcion getZoneAntennas; handler handlers.get_zone_antennas.lambda_handler.\nFirma AWS Signature V4, servicio execute-api.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "auth": {
+                  "type": "awsv4",
+                  "awsv4": [
+                    {
+                      "key": "accessKey",
+                      "value": "{{aws_access_key_id}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "secretKey",
+                      "value": "{{aws_secret_access_key}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "sessionToken",
+                      "value": "{{aws_session_token}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "region",
+                      "value": "{{aws_region}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "service",
+                      "value": "execute-api",
+                      "type": "string"
+                    }
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('coverage_base_url')) throw new Error('Configura coverage_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('aws_access_key_id') || !pm.variables.get('aws_secret_access_key')) throw new Error('Faltan credenciales AWS temporales para firma IAM');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "03 Telemetry",
+      "description": "Probar individualmente tras preparar los datos; revisar requisitos de cada solicitud.",
+      "item": [
+        {
+          "name": "Publicos - Cognito",
+          "item": [
+            {
+              "name": "POST /v1/telemetry",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-telemetry-postTelemetry"
+                  }
+                ],
+                "url": "{{telemetry_base_url}}/v1/telemetry",
+                "description": "Fuente: services/network-telemetry/serverless.yml; funcion postTelemetry; handler handlers.post_telemetry.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"antenna_id\": \"{{antenna_id}}\",\n  \"timestamp\": \"{{telemetry_timestamp}}\",\n  \"traffic_gb_min\": 80\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('telemetry_base_url')) throw new Error('Configura telemetry_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [202]', () => pm.expect(pm.response.code).to.be.oneOf([202]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "POST /v1/telemetry/batch",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-telemetry-postTelemetryBatch"
+                  }
+                ],
+                "url": "{{telemetry_base_url}}/v1/telemetry/batch",
+                "description": "Fuente: services/network-telemetry/serverless.yml; funcion postTelemetryBatch; handler handlers.post_telemetry_batch.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"measurements\": [\n    {\n      \"antenna_id\": \"{{antenna_id}}\",\n      \"timestamp\": \"{{measurement_timestamp}}\",\n      \"traffic_gb_min\": 60\n    },\n    {\n      \"antenna_id\": \"{{antenna_id}}\",\n      \"timestamp\": \"{{previous_timestamp}}\",\n      \"traffic_gb_min\": 45\n    }\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('telemetry_base_url')) throw new Error('Configura telemetry_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [202]', () => pm.expect(pm.response.code).to.be.oneOf([202]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /v1/telemetry/antennas/{antennaId}/latest",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{telemetry_base_url}}/v1/telemetry/antennas/{{antenna_id}}/latest",
+                "description": "Fuente: services/network-telemetry/serverless.yml; funcion getAntennaLatest; handler handlers.get_antenna_latest.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('telemetry_base_url')) throw new Error('Configura telemetry_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /v1/telemetry/antennas/{antennaId}/history",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{telemetry_base_url}}/v1/telemetry/antennas/{{antenna_id}}/history?from={{from}}&to={{to}}&limit={{limit}}",
+                "description": "Fuente: services/network-telemetry/serverless.yml; funcion getAntennaHistory; handler handlers.get_antenna_history.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('telemetry_base_url')) throw new Error('Configura telemetry_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /v1/telemetry/antennas/{antennaId}/summary",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{telemetry_base_url}}/v1/telemetry/antennas/{{antenna_id}}/summary?from={{from}}&to={{to}}",
+                "description": "Fuente: services/network-telemetry/serverless.yml; funcion getAntennaSummary; handler handlers.get_antenna_summary.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('telemetry_base_url')) throw new Error('Configura telemetry_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /v1/telemetry/alerts",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{telemetry_base_url}}/v1/telemetry/alerts?from={{from}}&to={{to}}&limit={{limit}}",
+                "description": "Fuente: services/network-telemetry/serverless.yml; funcion getTelemetryAlerts; handler handlers.get_telemetry_alerts.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('telemetry_base_url')) throw new Error('Configura telemetry_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Internos - AWS IAM",
+          "item": [
+            {
+              "name": "GET /v1/internal/telemetry/antennas/{antenna_id}/latest",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{telemetry_base_url}}/v1/internal/telemetry/antennas/{{antenna_id}}/latest",
+                "description": "Fuente: services/network-telemetry/serverless.yml; funcion getInternalAntennaLatest; handler handlers.get_internal_antenna_latest.lambda_handler.\nFirma AWS Signature V4, servicio execute-api.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "auth": {
+                  "type": "awsv4",
+                  "awsv4": [
+                    {
+                      "key": "accessKey",
+                      "value": "{{aws_access_key_id}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "secretKey",
+                      "value": "{{aws_secret_access_key}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "sessionToken",
+                      "value": "{{aws_session_token}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "region",
+                      "value": "{{aws_region}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "service",
+                      "value": "execute-api",
+                      "type": "string"
+                    }
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('telemetry_base_url')) throw new Error('Configura telemetry_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('aws_access_key_id') || !pm.variables.get('aws_secret_access_key')) throw new Error('Faltan credenciales AWS temporales para firma IAM');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "05 Incidents",
+      "description": "Probar individualmente tras preparar los datos; revisar requisitos de cada solicitud.",
+      "item": [
+        {
+          "name": "Publicos - Cognito",
+          "item": [
+            {
+              "name": "POST /incidencias",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-incidents-crearIncidencia"
+                  }
+                ],
+                "url": "{{incidents_base_url}}/incidencias",
+                "description": "Fuente: services/incidents-report/serverless.yml; funcion crearIncidencia; handler src/handlers/crearIncidencia.handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"numeroServicio\": \"DEMO-001\",\n  \"zona\": \"{{zone_id}}\",\n  \"tipoProblema\": \"NO_SIGNAL\",\n  \"descripcion\": \"Reporte ficticio para validar integracion\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('incidents_base_url')) throw new Error('Configura incidents_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [202]', () => pm.expect(pm.response.code).to.be.oneOf([202]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });",
+                      "if (pm.response.code >= 200 && pm.response.code < 300 && body) { for (const path of [\"reporteId\", \"reporte.reporteId\"]) { const v = path.split('.').reduce((x,k) => x && x[k], body); if (v) { pm.environment.set('report_id', String(v)); break; } } }"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "POST /soporte/chat",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-incidents-chatSoporte"
+                  }
+                ],
+                "url": "{{incidents_base_url}}/soporte/chat",
+                "description": "Fuente: services/incidents-report/serverless.yml; funcion chatSoporte; handler src/handlers/chatSoporte.handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.\nSi IA esta desactivada, el backend devuelve 503. Activar enable_ai solo despues de configurar esa integracion.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"mensaje\": \"Como consulto el estado de mi reporte de red?\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [\"enable_ai\"].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('incidents_base_url')) throw new Error('Configura incidents_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /incidencias",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{incidents_base_url}}/incidencias?tipo=reportes&limit={{limit}}",
+                "description": "Fuente: services/incidents-report/serverless.yml; funcion listarIncidencias; handler src/handlers/listarIncidencias.handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('incidents_base_url')) throw new Error('Configura incidents_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /incidencias/{id}",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{incidents_base_url}}/incidencias/{{report_id}}",
+                "description": "Fuente: services/incidents-report/serverless.yml; funcion obtenerDetalleIncidencia; handler src/handlers/obtenerDetalleIncidencia.handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('incidents_base_url')) throw new Error('Configura incidents_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "PATCH /incidencias/{id}/estado",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-incidents-actualizarEstadoIncidencia"
+                  }
+                ],
+                "url": "{{incidents_base_url}}/incidencias/{{incident_id}}/estado",
+                "description": "Fuente: services/incidents-report/serverless.yml; funcion actualizarEstadoIncidencia; handler src/handlers/actualizarEstadoIncidencia.handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.\nLa transicion debe ser valida para el estado actual; 409 no se cuenta como exito.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"nuevoEstado\": \"EN_REVISION\",\n  \"comentario\": \"Prueba Postman: solicitar revision\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('incidents_base_url')) throw new Error('Configura incidents_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [202]', () => pm.expect(pm.response.code).to.be.oneOf([202]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /incidencias/metricas",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{incidents_base_url}}/incidencias/metricas?zona={{zone_id}}&from={{from}}&to={{to}}",
+                "description": "Fuente: services/incidents-report/serverless.yml; funcion metricasIncidentes; handler src/handlers/metricasIncidentes.handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('incidents_base_url')) throw new Error('Configura incidents_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /incidencias/usuario/{userId}",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{incidents_base_url}}/incidencias/usuario/{{user_id}}",
+                "description": "Fuente: services/incidents-report/serverless.yml; funcion listarReportesUsuario; handler src/handlers/listarReportesUsuario.handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('incidents_base_url')) throw new Error('Configura incidents_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /incidencias/zona/{zona}",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{incidents_base_url}}/incidencias/zona/{{zone_id}}",
+                "description": "Fuente: services/incidents-report/serverless.yml; funcion listarReportesZona; handler src/handlers/listarReportesZona.handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('incidents_base_url')) throw new Error('Configura incidents_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Internos - AWS IAM",
+          "item": [
+            {
+              "name": "GET /v1/reports/incidents/{id}/recipients",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{incidents_base_url}}/v1/reports/incidents/{{incident_id}}/recipients?limit={{limit}}",
+                "description": "Fuente: services/incidents-report/serverless.yml; funcion listarDestinatariosIncidente; handler src/handlers/listarDestinatariosIncidente.handler.\nFirma AWS Signature V4, servicio execute-api.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "auth": {
+                  "type": "awsv4",
+                  "awsv4": [
+                    {
+                      "key": "accessKey",
+                      "value": "{{aws_access_key_id}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "secretKey",
+                      "value": "{{aws_secret_access_key}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "sessionToken",
+                      "value": "{{aws_session_token}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "region",
+                      "value": "{{aws_region}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "service",
+                      "value": "execute-api",
+                      "type": "string"
+                    }
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('incidents_base_url')) throw new Error('Configura incidents_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('aws_access_key_id') || !pm.variables.get('aws_secret_access_key')) throw new Error('Faltan credenciales AWS temporales para firma IAM');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "08 Field Operations",
+      "description": "Probar individualmente tras preparar los datos; revisar requisitos de cada solicitud.",
+      "item": [
+        {
+          "name": "Publicos - Cognito",
+          "item": [
+            {
+              "name": "POST /technicians",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-field-fieldOperations"
+                  }
+                ],
+                "url": "{{field_base_url}}/technicians",
+                "description": "Fuente: MICROSERVICIO 8/serverless.yml; funcion fieldOperations; handler field_operations.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"technicianId\": \"{{technician_id}}\",\n  \"name\": \"Tecnico de prueba\",\n  \"zoneId\": \"{{zone_id}}\",\n  \"skills\": [\n    \"NETWORK\"\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('field_base_url')) throw new Error('Configura field_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [201]', () => pm.expect(pm.response.code).to.be.oneOf([201]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });",
+                      "if (pm.response.code >= 200 && pm.response.code < 300 && body) { for (const path of [\"technicianId\"]) { const v = path.split('.').reduce((x,k) => x && x[k], body); if (v) { pm.environment.set('technician_id', String(v)); break; } } }"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "POST /work-orders",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-field-fieldOperations"
+                  }
+                ],
+                "url": "{{field_base_url}}/work-orders",
+                "description": "Fuente: MICROSERVICIO 8/serverless.yml; funcion fieldOperations; handler field_operations.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"incidentId\": \"{{incident_id}}\",\n  \"zoneId\": \"{{zone_id}}\",\n  \"requiredSkill\": \"NETWORK\",\n  \"description\": \"Prueba de cada endpoint\",\n  \"priority\": \"MEDIUM\",\n  \"antennaId\": \"{{antenna_id}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('field_base_url')) throw new Error('Configura field_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200, 201]', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });",
+                      "if (pm.response.code >= 200 && pm.response.code < 300 && body) { for (const path of [\"workOrderId\"]) { const v = path.split('.').reduce((x,k) => x && x[k], body); if (v) { pm.environment.set('work_order_id', String(v)); break; } } }"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /technicians",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{field_base_url}}/technicians",
+                "description": "Fuente: MICROSERVICIO 8/serverless.yml; funcion fieldOperations; handler field_operations.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('field_base_url')) throw new Error('Configura field_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /technicians/{id}",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{field_base_url}}/technicians/{{technician_id}}",
+                "description": "Fuente: MICROSERVICIO 8/serverless.yml; funcion fieldOperations; handler field_operations.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('field_base_url')) throw new Error('Configura field_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "PATCH /technicians/{id}",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-field-fieldOperations"
+                  }
+                ],
+                "url": "{{field_base_url}}/technicians/{{technician_id}}",
+                "description": "Fuente: MICROSERVICIO 8/serverless.yml; funcion fieldOperations; handler field_operations.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.\nLa transicion debe ser valida para el estado actual; 409 no se cuenta como exito.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"name\": \"Tecnico Postman actualizado\",\n  \"status\": \"AVAILABLE\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('field_base_url')) throw new Error('Configura field_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /work-orders",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{field_base_url}}/work-orders",
+                "description": "Fuente: MICROSERVICIO 8/serverless.yml; funcion fieldOperations; handler field_operations.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('field_base_url')) throw new Error('Configura field_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /work-orders/{id}",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{field_base_url}}/work-orders/{{work_order_id}}",
+                "description": "Fuente: MICROSERVICIO 8/serverless.yml; funcion fieldOperations; handler field_operations.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('field_base_url')) throw new Error('Configura field_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "POST /work-orders/{id}/assign",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-field-fieldOperations"
+                  }
+                ],
+                "url": "{{field_base_url}}/work-orders/{{work_order_id}}/assign",
+                "description": "Fuente: MICROSERVICIO 8/serverless.yml; funcion fieldOperations; handler field_operations.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.\nRequiere orden PENDING_ASSIGNMENT y tecnico disponible; 409 indica que no se cumple la precondicion.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('field_base_url')) throw new Error('Configura field_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "PATCH /work-orders/{id}/status",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-field-fieldOperations"
+                  }
+                ],
+                "url": "{{field_base_url}}/work-orders/{{work_order_id}}/status",
+                "description": "Fuente: MICROSERVICIO 8/serverless.yml; funcion fieldOperations; handler field_operations.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.\nLa transicion debe ser valida para el estado actual; 409 no se cuenta como exito.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"status\": \"IN_PROGRESS\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('field_base_url')) throw new Error('Configura field_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Internos - AWS IAM",
+          "item": []
+        }
+      ]
+    },
+    {
+      "name": "09 Notifications",
+      "description": "Probar individualmente tras preparar los datos; revisar requisitos de cada solicitud.",
+      "item": [
+        {
+          "name": "Publicos - Cognito",
+          "item": [
+            {
+              "name": "POST /v1/notifications",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-notifications-postNotification"
+                  }
+                ],
+                "url": "{{notifications_base_url}}/v1/notifications",
+                "description": "Fuente: services/notifications/serverless.yml; funcion postNotification; handler handlers.post_notification.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"recipient_id\": \"{{recipient_id}}\",\n  \"incident_id\": \"{{incident_id}}\",\n  \"template\": \"INCIDENT_DETECTED\",\n  \"channels\": [\n    \"IN_APP\"\n  ],\n  \"variables\": {\n    \"zone_name\": \"Zona de prueba\",\n    \"incident_status\": \"EN_REVISION\"\n  }\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('notifications_base_url')) throw new Error('Configura notifications_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [202]', () => pm.expect(pm.response.code).to.be.oneOf([202]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });",
+                      "if (pm.response.code >= 200 && pm.response.code < 300 && body) { for (const path of [\"notification_id\"]) { const v = path.split('.').reduce((x,k) => x && x[k], body); if (v) { pm.environment.set('notification_id', String(v)); break; } } }"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "PUT /v1/notifications/preferences",
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-notifications-putNotificationPreferences"
+                  }
+                ],
+                "url": "{{notifications_base_url}}/v1/notifications/preferences",
+                "description": "Fuente: services/notifications/serverless.yml; funcion putNotificationPreferences; handler handlers.put_notification_preferences.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"email_enabled\": false,\n  \"sms_enabled\": false,\n  \"in_app_enabled\": true,\n  \"incident_updates\": true\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('notifications_base_url')) throw new Error('Configura notifications_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /v1/notifications",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{notifications_base_url}}/v1/notifications?from={{from}}&to={{to}}&limit={{limit}}",
+                "description": "Fuente: services/notifications/serverless.yml; funcion getNotifications; handler handlers.get_notifications.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('notifications_base_url')) throw new Error('Configura notifications_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /v1/notifications/{notificationId}",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{notifications_base_url}}/v1/notifications/{{notification_id}}",
+                "description": "Fuente: services/notifications/serverless.yml; funcion getNotification; handler handlers.get_notification.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('notifications_base_url')) throw new Error('Configura notifications_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "PATCH /v1/notifications/{notificationId}/read",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-notifications-patchNotificationRead"
+                  }
+                ],
+                "url": "{{notifications_base_url}}/v1/notifications/{{notification_id}}/read",
+                "description": "Fuente: services/notifications/serverless.yml; funcion patchNotificationRead; handler handlers.patch_notification_read.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.\nLa transicion debe ser valida para el estado actual; 409 no se cuenta como exito.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('notifications_base_url')) throw new Error('Configura notifications_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Internos - AWS IAM",
+          "item": []
+        }
+      ]
+    },
+    {
+      "name": "07 LEGADO opcional",
+      "description": "Probar individualmente tras preparar los datos; revisar requisitos de cada solicitud.",
+      "item": [
+        {
+          "name": "Publicos - Cognito",
+          "item": [
+            {
+              "name": "POST /reports",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-legacy_reports-customerReports"
+                  }
+                ],
+                "url": "{{legacy_reports_base_url}}/reports",
+                "description": "Fuente: MICROSERVICIO 7/serverless.yml; funcion customerReports; handler customer_reports.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"phone\": \"+51999000111\",\n  \"zoneId\": \"{{zone_id}}\",\n  \"occurredAt\": \"{{request_timestamp}}\",\n  \"problemType\": \"NO_SIGNAL\",\n  \"description\": \"Reporte ficticio del servicio legado\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [\"enable_legacy\"].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('legacy_reports_base_url')) throw new Error('Configura legacy_reports_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [201]', () => pm.expect(pm.response.code).to.be.oneOf([201]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });",
+                      "if (pm.response.code >= 200 && pm.response.code < 300 && body) { for (const path of [\"reportId\", \"report.reportId\"]) { const v = path.split('.').reduce((x,k) => x && x[k], body); if (v) { pm.environment.set('legacy_report_id', String(v)); break; } } }"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /reports",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{legacy_reports_base_url}}/reports",
+                "description": "Fuente: MICROSERVICIO 7/serverless.yml; funcion customerReports; handler customer_reports.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [\"enable_legacy\"].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('legacy_reports_base_url')) throw new Error('Configura legacy_reports_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /reports/{id}",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{legacy_reports_base_url}}/reports/{{legacy_report_id}}",
+                "description": "Fuente: MICROSERVICIO 7/serverless.yml; funcion customerReports; handler customer_reports.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [\"enable_legacy\"].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('legacy_reports_base_url')) throw new Error('Configura legacy_reports_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /reports/user/{userId}",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{legacy_reports_base_url}}/reports/user/{{user_id}}",
+                "description": "Fuente: MICROSERVICIO 7/serverless.yml; funcion customerReports; handler customer_reports.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [\"enable_legacy\"].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('legacy_reports_base_url')) throw new Error('Configura legacy_reports_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /reports/zone/{zoneId}",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{legacy_reports_base_url}}/reports/zone/{{zone_id}}",
+                "description": "Fuente: MICROSERVICIO 7/serverless.yml; funcion customerReports; handler customer_reports.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado."
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [\"enable_legacy\"].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('legacy_reports_base_url')) throw new Error('Configura legacy_reports_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "PATCH /reports/{id}/status",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-legacy_reports-customerReports"
+                  }
+                ],
+                "url": "{{legacy_reports_base_url}}/reports/{{legacy_report_id}}/status",
+                "description": "Fuente: MICROSERVICIO 7/serverless.yml; funcion customerReports; handler customer_reports.lambda_handler.\nIdToken de Cognito. Utilizar admin para la prueba general; los permisos dependen del rol.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.\nLa transicion debe ser valida para el estado actual; 409 no se cuenta como exito.",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"status\": \"IN_REVIEW\",\n  \"note\": \"Revision de prueba\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [\"enable_legacy\"].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('legacy_reports_base_url')) throw new Error('Configura legacy_reports_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('cognito_id_token')) throw new Error('Falta cognito_id_token: IdToken real, sin Bearer');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
+        },
+        {
+          "name": "Internos - AWS IAM",
+          "item": [
+            {
+              "name": "GET /v1/reports/{report_id}",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{legacy_reports_base_url}}/v1/reports/{{legacy_report_id}}",
+                "description": "Fuente: MICROSERVICIO 7/serverless.yml; funcion getInternalReport; handler get_internal_report.lambda_handler.\nFirma AWS Signature V4, servicio execute-api.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "auth": {
+                  "type": "awsv4",
+                  "awsv4": [
+                    {
+                      "key": "accessKey",
+                      "value": "{{aws_access_key_id}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "secretKey",
+                      "value": "{{aws_secret_access_key}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "sessionToken",
+                      "value": "{{aws_session_token}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "region",
+                      "value": "{{aws_region}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "service",
+                      "value": "execute-api",
+                      "type": "string"
+                    }
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [\"enable_legacy\"].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('legacy_reports_base_url')) throw new Error('Configura legacy_reports_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('aws_access_key_id') || !pm.variables.get('aws_secret_access_key')) throw new Error('Faltan credenciales AWS temporales para firma IAM');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "GET /v1/reports/incidents/{incident_id}/recipients",
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  }
+                ],
+                "url": "{{legacy_reports_base_url}}/v1/reports/incidents/{{incident_id}}/recipients?limit={{limit}}",
+                "description": "Fuente: MICROSERVICIO 7/serverless.yml; funcion getIncidentRecipients; handler get_incident_recipients.lambda_handler.\nFirma AWS Signature V4, servicio execute-api.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "auth": {
+                  "type": "awsv4",
+                  "awsv4": [
+                    {
+                      "key": "accessKey",
+                      "value": "{{aws_access_key_id}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "secretKey",
+                      "value": "{{aws_secret_access_key}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "sessionToken",
+                      "value": "{{aws_session_token}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "region",
+                      "value": "{{aws_region}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "service",
+                      "value": "execute-api",
+                      "type": "string"
+                    }
+                  ]
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [\"enable_legacy\"].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('legacy_reports_base_url')) throw new Error('Configura legacy_reports_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('aws_access_key_id') || !pm.variables.get('aws_secret_access_key')) throw new Error('Faltan credenciales AWS temporales para firma IAM');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "PUT /v1/reports/incidents/{incident_id}/recipients",
+              "request": {
+                "method": "PUT",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-legacy_reports-putIncidentRecipients"
+                  }
+                ],
+                "url": "{{legacy_reports_base_url}}/v1/reports/incidents/{{incident_id}}/recipients",
+                "description": "Fuente: MICROSERVICIO 7/serverless.yml; funcion putIncidentRecipients; handler put_incident_recipients.lambda_handler.\nFirma AWS Signature V4, servicio execute-api.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.",
+                "auth": {
+                  "type": "awsv4",
+                  "awsv4": [
+                    {
+                      "key": "accessKey",
+                      "value": "{{aws_access_key_id}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "secretKey",
+                      "value": "{{aws_secret_access_key}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "sessionToken",
+                      "value": "{{aws_session_token}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "region",
+                      "value": "{{aws_region}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "service",
+                      "value": "execute-api",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"recipient_ids\": [\n    \"{{user_id}}\"\n  ]\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [\"enable_legacy\", \"run_internal_writes\"].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('legacy_reports_base_url')) throw new Error('Configura legacy_reports_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('aws_access_key_id') || !pm.variables.get('aws_secret_access_key')) throw new Error('Faltan credenciales AWS temporales para firma IAM');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            },
+            {
+              "name": "PATCH /v1/reports/{report_id}/incident",
+              "request": {
+                "method": "PATCH",
+                "header": [
+                  {
+                    "key": "Accept",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "Idempotency-Key",
+                    "value": "PM-{{run_id}}-legacy_reports-patchReportIncident"
+                  }
+                ],
+                "url": "{{legacy_reports_base_url}}/v1/reports/{{legacy_report_id}}/incident",
+                "description": "Fuente: MICROSERVICIO 7/serverless.yml; funcion patchReportIncident; handler patch_report_incident.lambda_handler.\nFirma AWS Signature V4, servicio execute-api.\nCrear primero los recursos indicados por las variables. 202 significa aceptado y no garantiza procesamiento terminado.\nLa transicion debe ser valida para el estado actual; 409 no se cuenta como exito.",
+                "auth": {
+                  "type": "awsv4",
+                  "awsv4": [
+                    {
+                      "key": "accessKey",
+                      "value": "{{aws_access_key_id}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "secretKey",
+                      "value": "{{aws_secret_access_key}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "sessionToken",
+                      "value": "{{aws_session_token}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "region",
+                      "value": "{{aws_region}}",
+                      "type": "string"
+                    },
+                    {
+                      "key": "service",
+                      "value": "execute-api",
+                      "type": "string"
+                    }
+                  ]
+                },
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"incident_id\": \"{{incident_id}}\",\n  \"status\": \"EN_REVISION\",\n  \"updated_at\": \"{{request_timestamp}}\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "const skipped = [\"enable_legacy\", \"run_internal_writes\"].some(flag => String(pm.variables.get(flag)) !== 'true');",
+                      "if (skipped) { console.info('Solicitud omitida: revisar flags opt-in'); pm.execution.skipRequest(); } else {",
+                      "if (!pm.variables.get('legacy_reports_base_url')) throw new Error('Configura legacy_reports_base_url con URL real y stage si corresponde');",
+                      "if (!pm.variables.get('aws_access_key_id') || !pm.variables.get('aws_secret_access_key')) throw new Error('Faltan credenciales AWS temporales para firma IAM');",
+                      "}"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('HTTP esperado [200]', () => pm.expect(pm.response.code).to.be.oneOf([200]));",
+                      "let body; pm.test('Respuesta JSON valida', () => { body = pm.response.json(); pm.expect(body).to.not.equal(null); });"
+                    ]
+                  }
+                }
+              ],
+              "response": []
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

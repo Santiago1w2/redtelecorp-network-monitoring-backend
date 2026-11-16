@@ -1,13 +1,6 @@
 exports.handler = async (event) => {
-  const email = (event.request.userAttributes.email || "").toLowerCase();
-  const adminEmails = (process.env.ADMIN_EMAILS || "")
-    .split(",")
-    .map((e) => e.trim().toLowerCase());
-
-  if (adminEmails.includes(email)) {
-    event.response.autoConfirmUser = true;
-    event.response.autoVerifyEmail = true;
-  }
-
+  // Cognito debe confirmar el correo; conocer un email de ADMIN_EMAILS no concede acceso.
+  event.response.autoConfirmUser = false;
+  event.response.autoVerifyEmail = false;
   return event;
 };

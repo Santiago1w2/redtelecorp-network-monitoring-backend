@@ -1,0 +1,258 @@
+# AWS network only; no Oracle resources or credentials.
+org: santiagomorales
+service: rtc-network
+provider:
+  name: aws
+  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'dev'}
+resources:
+  Parameters:
+    NetworkMode:
+      Type: String
+      Default: ${param:networkMode, 'existing'}
+      AllowedValues:
+      - existing
+      - create
+  Conditions:
+    CreateNetwork:
+      Fn::Equals:
+      - Ref: NetworkMode
+      - create
+  Resources:
+    Vpc:
+      Type: AWS::EC2::VPC
+      Condition: CreateNetwork
+      Properties:
+        CidrBlock: 10.42.0.0/16
+        EnableDnsSupport: true
+        EnableDnsHostnames: true
+        Tags:
+        - Key: Name
+          Value: rtc-network-${sls:stage}-vpc
+    InternetGateway:
+      Type: AWS::EC2::InternetGateway
+      Condition: CreateNetwork
+      Properties:
+        Tags:
+        - Key: Name
+          Value: rtc-network-${sls:stage}-igw
+    InternetAttachment:
+      Type: AWS::EC2::VPCGatewayAttachment
+      Condition: CreateNetwork
+      Properties:
+        VpcId:
+          Ref: Vpc
+        InternetGatewayId:
+          Ref: InternetGateway
+    PublicSubnet:
+      Type: AWS::EC2::Subnet
+      Condition: CreateNetwork
+      Properties:
+        VpcId:
+          Ref: Vpc
+        CidrBlock: 10.42.0.0/24
+        AvailabilityZone:
+          Fn::Select:
+          - 0
+          - Fn::GetAZs: ''
+        MapPublicIpOnLaunch: false
+        Tags:
+        - Key: Name
+          Value: rtc-network-${sls:stage}-PublicSubnet
+    PrivateSubnetA:
+      Type: AWS::EC2::Subnet
+      Condition: CreateNetwork
+      Properties:
+        VpcId:
+          Ref: Vpc
+        CidrBlock: 10.42.10.0/24
+        AvailabilityZone:
+          Fn::Select:
+          - 0
+          - Fn::GetAZs: ''
+        MapPublicIpOnLaunch: false
+        Tags:
+        - Key: Name
+          Value: rtc-network-${sls:stage}-PrivateSubnetA
+    PrivateSubnetB:
+      Type: AWS::EC2::Subnet
+      Condition: CreateNetwork
+      Properties:
+        VpcId:
+          Ref: Vpc
+        CidrBlock: 10.42.11.0/24
+        AvailabilityZone:
+          Fn::Select:
+          - 1
+          - Fn::GetAZs: ''
+        MapPublicIpOnLaunch: false
+        Tags:
+        - Key: Name
+          Value: rtc-network-${sls:stage}-PrivateSubnetB
+    PublicRouteTable:
+      Type: AWS::EC2::RouteTable
+      Condition: CreateNetwork
+      Properties:
+        VpcId:
+          Ref: Vpc
+        Tags:
+        - Key: Name
+          Value: rtc-network-${sls:stage}-public-routes
+    PublicDefaultRoute:
+      Type: AWS::EC2::Route
+      Condition: CreateNetwork
+      Properties:
+        RouteTableId:
+          Ref: PublicRouteTable
+        DestinationCidrBlock: 0.0.0.0/0
+        GatewayId:
+          Ref: InternetGateway
+      DependsOn: InternetAttachment
+    PublicAssociation:
+      Type: AWS::EC2::SubnetRouteTableAssociation
+      Condition: CreateNetwork
+      Properties:
+        RouteTableId:
+          Ref: PublicRouteTable
+        SubnetId:
+          Ref: PublicSubnet
+    NatAddress:
+      Type: AWS::EC2::EIP
+      Condition: CreateNetwork
+      Properties:
+        Domain: vpc
+        Tags:
+        - Key: Name
+          Value: rtc-network-${sls:stage}-nat-ip
+      DependsOn: InternetAttachment
+    NatGateway:
+      Type: AWS::EC2::NatGateway
+      Condition: CreateNetwork
+      Properties:
+        AllocationId:
+          Fn::GetAtt:
+          - NatAddress
+          - AllocationId
+        SubnetId:
+          Ref: PublicSubnet
+        ConnectivityType: public
+        Tags:
+        - Key: Name
+          Value: rtc-network-${sls:stage}-nat
+      DependsOn:
+      - PublicDefaultRoute
+      - PublicAssociation
+    PrivateRouteTable:
+      Type: AWS::EC2::RouteTable
+      Condition: CreateNetwork
+      Properties:
+        VpcId:
+          Ref: Vpc
+        Tags:
+        - Key: Name
+          Value: rtc-network-${sls:stage}-private-routes
+    PrivateDefaultRoute:
+      Type: AWS::EC2::Route
+      Condition: CreateNetwork
+      Properties:
+        RouteTableId:
+          Ref: PrivateRouteTable
+        DestinationCidrBlock: 0.0.0.0/0
+        NatGatewayId:
+          Ref: NatGateway
+    PrivateAssociationA:
+      Type: AWS::EC2::SubnetRouteTableAssociation
+      Condition: CreateNetwork
+      Properties:
+        RouteTableId:
+          Ref: PrivateRouteTable
+        SubnetId:
+          Ref: PrivateSubnetA
+    PrivateAssociationB:
+      Type: AWS::EC2::SubnetRouteTableAssociation
+      Condition: CreateNetwork
+      Properties:
+        RouteTableId:
+          Ref: PrivateRouteTable
+        SubnetId:
+          Ref: PrivateSubnetB
+    S3Endpoint:
+      Type: AWS::EC2::VPCEndpoint
+      Condition: CreateNetwork
+      Properties:
+        VpcId:
+          Ref: Vpc
+        ServiceName:
+          Fn::Sub: com.amazonaws.${AWS::Region}.s3
+        VpcEndpointType: Gateway
+        RouteTableIds:
+        - Ref: PrivateRouteTable
+    LambdaSecurityGroup:
+      Type: AWS::EC2::SecurityGroup
+      Condition: CreateNetwork
+      Properties:
+        GroupDescription: Lambda outbound HTTPS and Oracle TLS; no inbound rules
+        VpcId:
+          Ref: Vpc
+        SecurityGroupIngress: []
+        SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: AWS HTTPS services
+        - IpProtocol: tcp
+          FromPort: ${param:oracleTlsPort, 1521}
+          ToPort: ${param:oracleTlsPort, 1521}
+          CidrIp: 0.0.0.0/0
+          Description: Oracle TLS
+        Tags:
+        - Key: Name
+          Value: rtc-network-${sls:stage}-lambda
+    NetworkModeRecord:
+      Type: AWS::SSM::Parameter
+      Properties:
+        Name: /telecorp/${sls:stage}/network/mode
+        Type: String
+        Value:
+          Ref: NetworkMode
+        Description: Network mode; existing resources are referenced, not imported or managed.
+  Outputs:
+    VpcId:
+      Value:
+        Fn::If:
+        - CreateNetwork
+        - Ref: Vpc
+        - ${param:existingVpcId, ''}
+      Export:
+        Name: ${self:service}-${sls:stage}-VpcId
+    SecurityGroupIds:
+      Value:
+        Fn::If:
+        - CreateNetwork
+        - Ref: LambdaSecurityGroup
+        - ${param:existingSecurityGroupIds, ''}
+      Export:
+        Name: ${self:service}-${sls:stage}-SecurityGroupIds
+    SubnetIds:
+      Value:
+        Fn::If:
+        - CreateNetwork
+        - Fn::Join:
+          - ','
+          - - Ref: PrivateSubnetA
+            - Ref: PrivateSubnetB
+        - ${param:existingSubnetIds, ''}
+      Export:
+        Name: ${self:service}-${sls:stage}-SubnetIds
+    OracleEgressIp:
+      Value:
+        Fn::If:
+        - CreateNetwork
+        - Ref: NatAddress
+        - ${param:existingEgressIp, ''}
+      Export:
+        Name: ${self:service}-${sls:stage}-OracleEgressIp
+    NetworkMode:
+      Value:
+        Ref: NetworkMode

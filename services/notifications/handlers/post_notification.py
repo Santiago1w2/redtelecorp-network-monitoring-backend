@@ -49,7 +49,7 @@ def validate(data):
     if data['template'] not in TEMPLATES:
         raise ValueError('Plantilla inválida')
     channels = data['channels']
-    if not isinstance(channels, list) or not channels or len(channels) > 3 or (len(set(channels)) != len(channels)) or set(channels) - {'EMAIL', 'SMS', 'IN_APP'}:
+    if not isinstance(channels, list) or not channels or len(channels) > 2 or (len(set(channels)) != len(channels)) or set(channels) - {'EMAIL', 'IN_APP'}:
         raise ValueError('Canales inválidos')
     variables = data.get('variables', {})
     if not isinstance(variables, dict) or set(variables) != {'zone_name', 'incident_status'} or any((not isinstance(v, str) or not 1 <= len(v) <= 200 for v in variables.values())):
@@ -65,11 +65,10 @@ def external_json(base_url, route, method='GET', payload=None):
         raise ConnectionError('La integración requiere HTTPS')
     data = dumps(payload).encode() if payload is not None else None
     headers = {'Content-Type': 'application/json'}
-    if not os.environ.get('LOCAL_TEST') == 'true':
-        credentials = boto3.Session().get_credentials().get_frozen_credentials()
-        signed = AWSRequest(method=method, url=url, data=data, headers=headers)
-        SigV4Auth(credentials, 'execute-api', os.environ.get('AWS_REGION', 'us-east-1')).add_auth(signed)
-        headers = dict(signed.headers.items())
+    credentials = boto3.Session().get_credentials().get_frozen_credentials()
+    signed = AWSRequest(method=method, url=url, data=data, headers=headers)
+    SigV4Auth(credentials, 'execute-api', os.environ.get('AWS_REGION', 'us-east-1')).add_auth(signed)
+    headers = dict(signed.headers.items())
     try:
         with request.urlopen(request.Request(url, data=data, headers=headers, method=method), timeout=5) as result:
             return json.loads(result.read(1000000), parse_float=Decimal)
@@ -100,7 +99,7 @@ def now():
 def decimalize(value):
     return json.loads(dumps(value), parse_float=Decimal)
 
-def create_notification(data, idempotency_key, occurred_at=None):
+def create_notification(data, idempotency_key, occurred_at=None, admin_copy=False):
     data = validate(data)
     digest = hashlib.sha256(dumps({**data, 'channels': sorted(data['channels']), 'variables': dict(sorted(data['variables'].items()))}).encode()).hexdigest()
     dedup = dynamodb.Table(IDEMPOTENCY)
@@ -112,7 +111,7 @@ def create_notification(data, idempotency_key, occurred_at=None):
     notification_id = str(uuid.uuid4())
     created = timestamp(occurred_at) if occurred_at else now()
     title, message = TEMPLATES[data['template']]
-    item = dict(data, notification_id=notification_id, notification_key=created + '#' + notification_id, created_at=created, title=title, message=message.format(**data['variables']), read=False, delivery_status={channel: {'status': 'PENDING', 'attempts': 0} for channel in data['channels']})
+    item = dict(data, admin_copy=admin_copy, notification_id=notification_id, notification_key=created + '#' + notification_id, created_at=created, title=title, message=message.format(**data['variables']), read=False, delivery_status={channel: {'status': 'PENDING', 'attempts': 0} for channel in data['channels']})
     entry = {'idempotency_key': idempotency_key, 'status': 'CREATED', 'created_at': created, 'notification_id': notification_id, 'payload_hash': digest, 'expires_at': int(time.time()) + 90 * 86400}
 
     def attrs(value):
@@ -138,6 +137,29 @@ def body(event):
     if not isinstance(value, dict):
         raise ValueError('Se requiere un objeto JSON')
     return value
+
+def administrator_ids():
+    pool = os.environ.get('COGNITO_USER_POOL_ARN', '').rsplit('/', 1)[-1]
+    if not pool:
+        raise ConnectionError('COGNITO_USER_POOL_ARN is required for administrator notifications')
+    cognito = boto3.client('cognito-idp')
+    users, token, tokens = set(), None, set()
+    while True:
+        args = dict(UserPoolId=pool, GroupName='admin', Limit=60)
+        if token:
+            args['NextToken'] = token
+        page = cognito.list_users_in_group(**args)
+        for user in page.get('Users', []):
+            attrs = {a['Name']: a['Value'] for a in user.get('Attributes', [])}
+            if user.get('Enabled') and user.get('UserStatus') == 'CONFIRMED' and attrs.get('email_verified') == 'true':
+                users.add(identifier(attrs['sub']))
+        token = page.get('NextToken')
+        if not token:
+            return users
+        if token in tokens or len(tokens) >= 99:
+            raise ConnectionError('Invalid administrator pagination')
+        tokens.add(token)
+
 
 def lambda_handler(event, context):
     try:
@@ -182,13 +204,21 @@ def lambda_handler(event, context):
         recipient(data['recipient_id'])
         headers = {k.lower(): v for k, v in (event.get('headers') or {}).items()}
         key = identifier(headers.get('idempotency-key', str(uuid.uuid4())))
-        notification_id = create_notification(data, 'http:' + sender + ':' + key)
+        admins = administrator_ids()
+        primary = dict(data)
+        if data['recipient_id'] in admins:
+            primary['channels'] = ['EMAIL', 'IN_APP']
+        notification_id = create_notification(primary, 'http:' + sender + ':' + key, admin_copy=data['recipient_id'] in admins)
         if notification_id is None:
             return {
                 'statusCode': 409,
                 'headers': HEADERS,
                 'body': json.dumps({'message': 'Idempotency-Key reutilizada con otro contenido'}, default=str),
             }
+        for admin in sorted(admins - {data['recipient_id']}):
+            copy = dict(data, recipient_id=admin, channels=['EMAIL', 'IN_APP'])
+            if create_notification(copy, 'http-admin:' + sender + ':' + key + ':' + admin, admin_copy=True) is None:
+                raise ValueError('Idempotency-Key reutilizada con otro contenido')
         result = {'notification_id': notification_id, 'status': 'QUEUED'}
         if len(json.dumps(result, default=str).encode('utf-8')) > 5000000:
             return {

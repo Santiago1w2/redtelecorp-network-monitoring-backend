@@ -1,110 +1,70 @@
-const crypto = require("crypto");
-const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
-const { DynamoDBDocumentClient, PutCommand } = require("@aws-sdk/lib-dynamodb");
-const { SQSClient, SendMessageCommand } = require("@aws-sdk/client-sqs");
+const crypto = require('crypto');
+const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+const { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, DeleteCommand, QueryCommand, TransactWriteCommand } = require('@aws-sdk/lib-dynamodb');
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}), { marshallOptions: { removeUndefinedValues: true } });
+const now = () => new Date().toISOString();
+const hash = value => crypto.createHash('sha256').update(value).digest('hex');
+const identifier = value => { if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value)) throw new Error('InvalidIdentifier'); return value; };
+async function get(TableName, Key) { return (await ddb.send(new GetCommand({ TableName, Key, ConsistentRead: true }))).Item; }
+function audit(id, at, eventId, previous, next, actor = 'INCIDENT-MANAGEMENT', comment = '') {
+  return { entidadId: id, timestamp: at + '#' + eventId, occurred_at: at, estadoAnterior: previous || null, estadoNuevo: next, actorId: actor, comentario: comment };
+}
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const sqs = new SQSClient({});
+function claimsFrom(event) { return event.requestContext?.authorizer?.claims || event.requestContext?.authorizer?.jwt?.claims || {}; }
+function isStaff(event) {
+  let groups = claimsFrom(event)['cognito:groups'] || [];
+  if (typeof groups === 'string') { try { groups = JSON.parse(groups); } catch (_) { groups = groups.replace(/^\[|\]$/g, '').split(/[\s,]+/); } }
+  return Array.isArray(groups) && groups.some(group => ['admin', 'supervisor_red', 'operador_soporte', 'tecnico_campo'].includes(String(group).trim()));
+}
+const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': process.env.FRONTEND_ORIGIN || '' };
+function pagination(event, field, expected) {
+  const query = event.queryStringParameters || {};
+  const limit = Number(query.limit || 50);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('InvalidLimit');
+  let key;
+  if (query.cursor) {
+    try { key = JSON.parse(Buffer.from(query.cursor, 'base64url').toString()); } catch (_) { throw new Error('InvalidCursor'); }
+    if (!key || key[field] !== expected) throw new Error('InvalidCursor');
+  }
+  return { limit, key };
+}
 
-exports.handler = async (event) => {
+exports.handler = async event => {
   try {
-    const claims = event.requestContext.authorizer?.claims || {};
-    const userId = claims.sub;
-    const body = JSON.parse(event.body || "{}");
-
-    const {
-      numeroServicio,
-      zona,
-      tipoProblema,
-      descripcion,
-      fechaIncidente,
-      imagen_mime_type,
-      imagen_base64,
-    } = body;
-
-    if (!zona || !descripcion || !numeroServicio) {
-      return {
-        statusCode: 400,
-        headers: { "Access-Control-Allow-Origin": "*" },
-        body: JSON.stringify({
-          message: "Los campos numeroServicio, zona y descripcion son obligatorios",
-        }),
-      };
+    const userId = claimsFrom(event).sub;
+    if (!userId) return { statusCode: 401, headers, body: JSON.stringify({ message: 'Autenticacion requerida' }) };
+    const body = JSON.parse(event.body || '{}');
+    const zone = identifier(body.zone_id || body.zona);
+    const description = body.description || body.descripcion;
+    const type = body.problem_type || body.tipoProblema || 'GENERAL';
+    const at = now();
+    if (typeof description !== 'string' || !description.trim() || description.length > 1500 || typeof type !== 'string' || !/^[A-Z][A-Z0-9_]{0,63}$/.test(type)) throw new Error('InvalidReport');
+    if (typeof body.numeroServicio !== 'string' || !body.numeroServicio.trim() || body.numeroServicio.length > 64) throw new Error('InvalidService');
+    const occurredAt = body.fechaHora || body.occurred_at || at;
+    const occurredDate = new Date(occurredAt);
+    if (typeof occurredAt !== 'string' || !Number.isFinite(occurredDate.getTime()) || occurredDate.getTime() > Date.now() + 5 * 60000) throw new Error('InvalidOccurredAt');
+    if (body.imagen_base64 !== undefined && (typeof body.imagen_base64 !== 'string' || body.imagen_base64.length > 60000 || !/^[A-Za-z0-9+/]*={0,2}$/.test(body.imagen_base64) || !['image/jpeg', 'image/png', 'image/webp'].includes(body.imagen_mime_type))) throw new Error('InvalidImage');
+    const idempotency = Object.entries(event.headers || {}).find(([key]) => key.toLowerCase() === 'idempotency-key')?.[1];
+    if (idempotency && (typeof idempotency !== 'string' || idempotency.length > 128)) throw new Error('InvalidIdempotencyKey');
+    const reporteId = 'REP-' + (idempotency ? hash(userId + ':' + idempotency).slice(0, 32) : crypto.randomUUID());
+    const payloadHash = hash(JSON.stringify({ zone, description, type, service: body.numeroServicio.trim(), occurredAt: occurredDate.toISOString(), image: body.imagen_base64 || '' }));
+    const item = { reporteId, userId, zona: zone, descripcion: description.trim(), tipoProblema: type, numeroServicio: body.numeroServicio.trim(), occurredAt: occurredDate.toISOString(), createdAt: at, updatedAt: at, estado: 'REGISTRADA', payload_hash: payloadHash,
+      ...(body.imagen_base64 ? { imagen_base64: body.imagen_base64, imagen_mime_type: body.imagen_mime_type } : {}) };
+    const eventId = 'EVT-' + hash(reporteId + ':created');
+    const envelope = { event_id: eventId, event_type: 'report.created', source: 'incident-management', occurred_at: at, version: '1.0', data: { report_id: reporteId, user_id: userId, zone_id: zone, problem_type: type } };
+    try { await ddb.send(new TransactWriteCommand({ TransactItems: [
+      { Put: { TableName: process.env.REPORTES_TABLE, Item: item, ConditionExpression: 'attribute_not_exists(reporteId)' } },
+      { Put: { TableName: process.env.HISTORIAL_TABLE, Item: audit(reporteId, at, eventId, null, 'REGISTRADA', userId, 'Reporte registrado') } },
+      { Put: { TableName: process.env.OUTBOX_TABLE, Item: { event_id: eventId, envelope, destination: 'INCIDENT_INPUT', expires_at: Math.floor(Date.now() / 1000) + 2592000 } } },
+    ] })); } catch (error) {
+      const existing = await get(process.env.REPORTES_TABLE, { reporteId });
+      if (!existing) throw error;
+      if (existing.userId !== userId || existing.payload_hash !== payloadHash) return { statusCode: 409, headers, body: JSON.stringify({ message: 'Idempotency-Key reutilizada con otros datos' }) };
     }
-
-    const reporteId = `REP-${crypto.randomUUID()}`;
-    const now = new Date().toISOString();
-
-    const item = {
-      reporteId,
-      userId,
-      emailUsuario: claims.email || null,
-      dniUsuario: claims["custom:dni"] || null,
-      numeroServicio,
-      zona: zona.trim(),
-      tipoProblema: tipoProblema || "GENERAL",
-      descripcion,
-      fechaIncidente: fechaIncidente || now,
-      estado: "REGISTRADA",
-      prioridad: "PENDIENTE_IA",
-      incidenteColectivoId: null,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    // 1. Guardar reporte inicial en DynamoDB
-    await ddb.send(
-      new PutCommand({
-        TableName: process.env.REPORTES_TABLE,
-        Item: item,
-      })
-    );
-
-    // 2. Registrar auditoría inicial
-    await ddb.send(
-      new PutCommand({
-        TableName: process.env.HISTORIAL_TABLE,
-        Item: {
-          entidadId: reporteId,
-          timestamp: now,
-          estadoAnterior: null,
-          estadoNuevo: "REGISTRADA",
-          actorId: userId,
-          comentario: "Reporte registrado por el usuario",
-        },
-      })
-    );
-
-    // 3. Encolar en SQS para procesamiento asíncrono con IA de GCP (incluye imagen si existe)
-    await sqs.send(
-      new SendMessageCommand({
-        QueueUrl: process.env.REPORTES_QUEUE_URL,
-        MessageBody: JSON.stringify({
-          reporteId,
-          userId,
-          zona: item.zona,
-          descripcion,
-          imagen_mime_type: imagen_mime_type || null,
-          imagen_base64: imagen_base64 || null,
-          antenas_estado: body.antenas_estado || [], // Opcional: telemetría enviada en pruebas
-        }),
-      })
-    );
-
-    return {
-      statusCode: 201,
-      headers: { "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({
-        message: "Incidencia registrada y enviada a evaluación inteligente",
-        reporte: item,
-      }),
-    };
+    return { statusCode: 202, headers, body: JSON.stringify({ message: 'Reporte registrado para evaluacion', reporteId, reporte: { reporteId, userId, estado: 'REGISTRADA' } }) };
   } catch (error) {
-    console.error("Error registrando incidencia:", error);
-    return {
-      statusCode: 500,
-      headers: { "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({ message: "Error interno", error: error.message }),
-    };
+    const statusCode = error.name === 'SyntaxError' || error.message.startsWith('Invalid') ? 400 : 503;
+    console.error('report_create_failed', error.name);
+    return { statusCode, headers, body: JSON.stringify({ message: 'No se pudo registrar el reporte' }) };
   }
 };

@@ -1,0 +1,222 @@
+org: santiagomorales
+service: redtelecorp-customer-reports
+frameworkVersion: '4'
+provider:
+  name: aws
+  region: us-east-1
+  stage: dev
+  runtime: python3.13
+  architecture: x86_64
+  memorySize: 256
+  timeout: 15
+  logRetentionInDays: 7
+  httpApi:
+    name: ${self:service}-${sls:stage}-api
+    cors:
+      allowedOrigins:
+      - ${param:frontendOrigin}
+      allowedHeaders:
+      - Content-Type
+      - Authorization
+      - Idempotency-Key
+      allowedMethods:
+      - GET
+      - POST
+      - PUT
+      - PATCH
+      - OPTIONS
+    authorizers:
+      cognito:
+        type: jwt
+        identitySource: $request.header.Authorization
+        issuerUrl: https://cognito-idp.${aws:region}.amazonaws.com/${param:cognitoUserPoolId}
+        audience:
+        - ${param:cognitoClientId}
+  environment:
+    REPORTS_TABLE:
+      Ref: ReportsTable
+    EVENT_BUS:
+      Ref: ReportsEventBus
+    SHARED_EVENT_BUS: ${param:eventBusName, 'rtc-events-${sls:stage}'}
+    RECIPIENTS_TABLE: rtc-report-incident-recipients-${sls:stage}
+  iam:
+    role: arn:aws:iam::573505212581:role/LabRole
+functions:
+  customerReports:
+    name: ${self:service}-${sls:stage}
+    handler: customer_reports.lambda_handler
+    events:
+    - httpApi:
+        method: POST
+        path: /reports
+        authorizer:
+          name: cognito
+    - httpApi:
+        method: GET
+        path: /reports
+        authorizer:
+          name: cognito
+    - httpApi:
+        method: GET
+        path: /reports/{id}
+        authorizer:
+          name: cognito
+    - httpApi:
+        method: GET
+        path: /reports/user/{userId}
+        authorizer:
+          name: cognito
+    - httpApi:
+        method: GET
+        path: /reports/zone/{zoneId}
+        authorizer:
+          name: cognito
+    - httpApi:
+        method: PATCH
+        path: /reports/{id}/status
+        authorizer:
+          name: cognito
+  forwardEvents:
+    handler: forward_event.lambda_handler
+    events: []
+  publishPersistedEvents:
+    handler: publish_persisted_events.lambda_handler
+    timeout: 30
+  getInternalReport:
+    handler: get_internal_report.lambda_handler
+    events:
+    - httpApi:
+        method: GET
+        path: /v1/reports/{report_id}
+        authorizer:
+          type: aws_iam
+  getIncidentRecipients:
+    handler: get_incident_recipients.lambda_handler
+    events:
+    - httpApi:
+        method: GET
+        path: /v1/reports/incidents/{incident_id}/recipients
+        authorizer:
+          type: aws_iam
+  putIncidentRecipients:
+    handler: put_incident_recipients.lambda_handler
+    events:
+    - httpApi:
+        method: PUT
+        path: /v1/reports/incidents/{incident_id}/recipients
+        authorizer:
+          type: aws_iam
+  patchReportIncident:
+    handler: patch_report_incident.lambda_handler
+    events:
+    - httpApi:
+        method: PATCH
+        path: /v1/reports/{report_id}/incident
+        authorizer:
+          type: aws_iam
+resources:
+  Resources:
+    ReportsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${sls:stage}-data
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+        - AttributeName: reportId
+          AttributeType: S
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: zoneId
+          AttributeType: S
+        - AttributeName: reportedAt
+          AttributeType: S
+        KeySchema:
+        - AttributeName: reportId
+          KeyType: HASH
+        GlobalSecondaryIndexes:
+        - IndexName: userId-reportedAt-index
+          KeySchema:
+          - AttributeName: userId
+            KeyType: HASH
+          - AttributeName: reportedAt
+            KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: zoneId-reportedAt-index
+          KeySchema:
+          - AttributeName: zoneId
+            KeyType: HASH
+          - AttributeName: reportedAt
+            KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+    ReportsEventBus:
+      Type: AWS::Events::EventBus
+      Properties:
+        Name: ${self:service}-${sls:stage}-events
+    ForwardFailureQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: rtc-customer-reports-forward-failures-${sls:stage}
+        SqsManagedSseEnabled: true
+        MessageRetentionPeriod: 1209600
+    ForwardEventRetries:
+      Type: AWS::Lambda::EventInvokeConfig
+      Properties:
+        FunctionName:
+          Ref: ForwardEventsLambdaFunction
+        Qualifier: $LATEST
+        MaximumRetryAttempts: 2
+        MaximumEventAgeInSeconds: 21600
+        DestinationConfig:
+          OnFailure:
+            Destination:
+              Fn::GetAtt:
+              - ForwardFailureQueue
+              - Arn
+    PersistedEventMapping:
+      Type: AWS::Lambda::EventSourceMapping
+      Properties:
+        FunctionName:
+          Ref: PublishPersistedEventsLambdaFunction
+        EventSourceArn:
+          Fn::GetAtt:
+          - ReportsTable
+          - StreamArn
+        StartingPosition: TRIM_HORIZON
+        BatchSize: 10
+        BisectBatchOnFunctionError: true
+        MaximumRetryAttempts: 10
+        MaximumRecordAgeInSeconds: 82800
+        DestinationConfig:
+          OnFailure:
+            Destination:
+              Fn::GetAtt:
+              - ForwardFailureQueue
+              - Arn
+    IncidentRecipientsTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: ${self:provider.environment.RECIPIENTS_TABLE}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+        - AttributeName: incident_id
+          AttributeType: S
+        - AttributeName: recipient_id
+          AttributeType: S
+        KeySchema:
+        - AttributeName: incident_id
+          KeyType: HASH
+        - AttributeName: recipient_id
+          KeyType: RANGE
+        SSESpecification:
+          SSEEnabled: true
+  Outputs:
+    ReportsEventBusName:
+      Description: Bus de eventos para integrar Customer Reports con Incident Management
+      Value:
+        Ref: ReportsEventBus

@@ -1,6 +1,5 @@
 org: santiagomorales
 service: telecorp-identity-service
-
 provider:
   name: aws
   runtime: nodejs22.x
@@ -8,57 +7,85 @@ provider:
   stage: ${opt:stage, 'dev'}
   environment:
     USERS_TABLE: ${self:service}-users-${self:provider.stage}
-    ADMIN_EMAILS: ${ssm:/telecorp/${self:provider.stage}/cognito/admin-emails}
+    ADMIN_EMAILS: ${param:adminEmails, ssm:/telecorp/${self:provider.stage}/cognito/admin-emails}
+    FRONTEND_ORIGIN: ${param:frontendOrigin}
   iam:
     role: arn:aws:iam::573505212581:role/LabRole
-
 functions:
   preSignUp:
     handler: src/handlers/preSignUp.handler
-
   postConfirmation:
     handler: src/handlers/postConfirmation.handler
-
   getProfile:
     handler: src/handlers/getProfile.handler
     events:
-      - http:
-          path: auth/perfil
-          method: get
-          cors: true
-          authorizer:
-            name: TeleCorpAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt TeleCorpUserPool.Arn
-
+    - http:
+        path: auth/perfil
+        method: get
+        cors:
+          origin: ${param:frontendOrigin}
+          headers:
+          - Content-Type
+          - Authorization
+        authorizer:
+          name: TeleCorpAuthorizer
+          type: COGNITO_USER_POOLS
+          arn:
+            Fn::GetAtt:
+            - TeleCorpUserPool
+            - Arn
   crearUsuario:
     handler: src/handlers/crearUsuario.handler
     environment:
-      USER_POOL_ID: !Ref TeleCorpUserPool
+      USER_POOL_ID:
+        Ref: TeleCorpUserPool
     events:
-      - http:
-          path: auth/usuarios
-          method: post
-          cors: true
-          authorizer:
-            name: TeleCorpAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt TeleCorpUserPool.Arn
-
+    - http:
+        path: auth/usuarios
+        method: post
+        cors:
+          origin: ${param:frontendOrigin}
+          headers:
+          - Content-Type
+          - Authorization
+        authorizer:
+          name: TeleCorpAuthorizer
+          type: COGNITO_USER_POOLS
+          arn:
+            Fn::GetAtt:
+            - TeleCorpUserPool
+            - Arn
   asignarRol:
     handler: src/handlers/asignarRol.handler
     environment:
-      USER_POOL_ID: !Ref TeleCorpUserPool
+      USER_POOL_ID:
+        Ref: TeleCorpUserPool
     events:
-      - http:
-          path: auth/usuarios/rol
-          method: put
-          cors: true
-          authorizer:
-            name: TeleCorpAuthorizer
-            type: COGNITO_USER_POOLS
-            arn: !GetAtt TeleCorpUserPool.Arn
-
+    - http:
+        path: auth/usuarios/rol
+        method: put
+        cors:
+          origin: ${param:frontendOrigin}
+          headers:
+          - Content-Type
+          - Authorization
+        authorizer:
+          name: TeleCorpAuthorizer
+          type: COGNITO_USER_POOLS
+          arn:
+            Fn::GetAtt:
+            - TeleCorpUserPool
+            - Arn
+  getNotificationContact:
+    handler: src/handlers/getNotificationContact.handler
+    environment:
+      USER_POOL_ID:
+        Ref: TeleCorpUserPool
+    events:
+    - http:
+        path: /v1/identity/users/{user_id}/notification-contact
+        method: get
+        authorizer: aws_iam
 resources:
   Resources:
     UsersTable:
@@ -67,23 +94,28 @@ resources:
         TableName: ${self:provider.environment.USERS_TABLE}
         BillingMode: PAY_PER_REQUEST
         AttributeDefinitions:
-          - AttributeName: userId
-            AttributeType: S
+        - AttributeName: userId
+          AttributeType: S
         KeySchema:
-          - AttributeName: userId
-            KeyType: HASH
-
+        - AttributeName: userId
+          KeyType: HASH
     TeleCorpUserPool:
       Type: AWS::Cognito::UserPool
       Properties:
         UserPoolName: TeleCorpUserPool-${self:provider.stage}
         UsernameAttributes:
-          - email
+        - email
         AutoVerifiedAttributes:
-          - email
+        - email
         LambdaConfig:
-          PreSignUp: !GetAtt PreSignUpLambdaFunction.Arn
-          PostConfirmation: !GetAtt PostConfirmationLambdaFunction.Arn
+          PreSignUp:
+            Fn::GetAtt:
+            - PreSignUpLambdaFunction
+            - Arn
+          PostConfirmation:
+            Fn::GetAtt:
+            - PostConfirmationLambdaFunction
+            - Arn
         Policies:
           PasswordPolicy:
             MinimumLength: 8
@@ -92,103 +124,115 @@ resources:
             RequireNumbers: true
             RequireSymbols: false
         Schema:
-          - Name: email
-            AttributeDataType: String
-            Mutable: true
-            Required: true
-          - Name: phone_number
-            AttributeDataType: String
-            Mutable: true
-            Required: false
-          - Name: dni
-            AttributeDataType: String
-            Mutable: true
-            Required: false
-
+        - Name: email
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+        - Name: phone_number
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+        - Name: dni
+          AttributeDataType: String
+          Mutable: true
+          Required: false
     PreSignUpLambdaPermission:
       Type: AWS::Lambda::Permission
       Properties:
         Action: lambda:InvokeFunction
-        FunctionName: !GetAtt PreSignUpLambdaFunction.Arn
+        FunctionName:
+          Fn::GetAtt:
+          - PreSignUpLambdaFunction
+          - Arn
         Principal: cognito-idp.amazonaws.com
-        SourceArn: !GetAtt TeleCorpUserPool.Arn
-
+        SourceArn:
+          Fn::GetAtt:
+          - TeleCorpUserPool
+          - Arn
     PostConfirmationLambdaPermission:
       Type: AWS::Lambda::Permission
       Properties:
         Action: lambda:InvokeFunction
-        FunctionName: !GetAtt PostConfirmationLambdaFunction.Arn
+        FunctionName:
+          Fn::GetAtt:
+          - PostConfirmationLambdaFunction
+          - Arn
         Principal: cognito-idp.amazonaws.com
-        SourceArn: !GetAtt TeleCorpUserPool.Arn
-
+        SourceArn:
+          Fn::GetAtt:
+          - TeleCorpUserPool
+          - Arn
     TeleCorpUserPoolClient:
       Type: AWS::Cognito::UserPoolClient
       Properties:
         ClientName: TeleCorpWebClient-${self:provider.stage}
-        UserPoolId: !Ref TeleCorpUserPool
+        UserPoolId:
+          Ref: TeleCorpUserPool
         GenerateSecret: false
         ExplicitAuthFlows:
-          - ALLOW_USER_PASSWORD_AUTH
-          - ALLOW_REFRESH_TOKEN_AUTH
-          - ALLOW_USER_SRP_AUTH
-
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
     AdminGroup:
       Type: AWS::Cognito::UserPoolGroup
       Properties:
         GroupName: admin
         Description: Administradores del sistema con control total y gestion de roles
-        UserPoolId: !Ref TeleCorpUserPool
+        UserPoolId:
+          Ref: TeleCorpUserPool
         Precedence: 1
-
     SupervisorRedGroup:
       Type: AWS::Cognito::UserPoolGroup
       Properties:
         GroupName: supervisor_red
         Description: Supervisores de red encargados de monitoreo de antenas e infraestructura
-        UserPoolId: !Ref TeleCorpUserPool
+        UserPoolId:
+          Ref: TeleCorpUserPool
         Precedence: 2
-
     OperadorSoporteGroup:
       Type: AWS::Cognito::UserPoolGroup
       Properties:
         GroupName: operador_soporte
         Description: Operadores de mesa de ayuda y triaje de incidencias
-        UserPoolId: !Ref TeleCorpUserPool
+        UserPoolId:
+          Ref: TeleCorpUserPool
         Precedence: 3
-
     TecnicoCampoGroup:
       Type: AWS::Cognito::UserPoolGroup
       Properties:
         GroupName: tecnico_campo
         Description: Tecnicos desplegados en campo para reparacion de antenas y equipos
-        UserPoolId: !Ref TeleCorpUserPool
+        UserPoolId:
+          Ref: TeleCorpUserPool
         Precedence: 4
-
     ClientesGroup:
       Type: AWS::Cognito::UserPoolGroup
       Properties:
         GroupName: clientes
         Description: Usuarios finales que reportan fallas y consultan el estado del servicio
-        UserPoolId: !Ref TeleCorpUserPool
+        UserPoolId:
+          Ref: TeleCorpUserPool
         Precedence: 5
-
     UserPoolIdParam:
       Type: AWS::SSM::Parameter
       Properties:
         Name: /telecorp/${self:provider.stage}/cognito/user-pool-id
         Type: String
-        Value: !Ref TeleCorpUserPool
-
+        Value:
+          Ref: TeleCorpUserPool
     UserPoolArnParam:
       Type: AWS::SSM::Parameter
       Properties:
         Name: /telecorp/${self:provider.stage}/cognito/user-pool-arn
         Type: String
-        Value: !GetAtt TeleCorpUserPool.Arn
-
+        Value:
+          Fn::GetAtt:
+          - TeleCorpUserPool
+          - Arn
     UserPoolClientIdParam:
       Type: AWS::SSM::Parameter
       Properties:
         Name: /telecorp/${self:provider.stage}/cognito/client-id
         Type: String
-        Value: !Ref TeleCorpUserPoolClient
+        Value:
+          Ref: TeleCorpUserPoolClient

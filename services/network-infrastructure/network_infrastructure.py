@@ -39,7 +39,7 @@ def reply(status, payload):
         "statusCode": status,
         "headers": {
             "Content-Type": "application/json; charset=utf-8",
-            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Origin": os.environ.get("FRONTEND_ORIGIN", ""),
             "Access-Control-Allow-Methods": "GET,POST,PATCH,OPTIONS",
             "Access-Control-Allow-Headers": "Content-Type,Authorization",
         },
@@ -219,6 +219,25 @@ def lambda_handler(event, context):
     try:
         if method == "OPTIONS":
             return reply(200, {"message": "OK"})
+
+        internal = len(parts) == 4 and parts[:3] == ["v1", "infrastructure", "antennas"]
+        context = event.get("requestContext") or {}
+        if internal:
+            iam = context.get("authorizer", {}).get("iam", {}).get("userArn") or context.get("identity", {}).get("userArn")
+            if not iam:
+                return reply(403, {"message": "Se requiere identidad IAM"})
+        else:
+            claims = context.get("authorizer", {}).get("jwt", {}).get("claims", {})
+            if not claims.get("sub"):
+                return reply(401, {"message": "Autenticacion requerida"})
+            groups = claims.get("cognito:groups", [])
+            if isinstance(groups, str):
+                try:
+                    groups = json.loads(groups)
+                except ValueError:
+                    groups = groups.strip("[]").split(",")
+            if not isinstance(groups, list) or not any(str(group).strip() in {"admin", "supervisor_red", "operador_soporte", "tecnico_campo"} for group in groups):
+                return reply(403, {"message": "Se requiere un rol interno"})
 
         # Contrato interno consumido por Telemetry 03 y Coverage 04.
         if method == "GET" and len(parts) == 4 and parts[:3] == ["v1", "infrastructure", "antennas"]:

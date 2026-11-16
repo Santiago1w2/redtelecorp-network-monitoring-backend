@@ -1,0 +1,184 @@
+org: santiagomorales
+service: redtelecorp-network-infrastructure
+frameworkVersion: '4'
+provider:
+  name: aws
+  region: us-east-1
+  stage: dev
+  runtime: python3.13
+  architecture: x86_64
+  memorySize: 256
+  timeout: 10
+  logRetentionInDays: 7
+  httpApi:
+    name: ${self:service}-${sls:stage}-api
+    cors:
+      allowedOrigins:
+      - ${param:frontendOrigin}
+      allowedHeaders:
+      - Content-Type
+      - Authorization
+      allowedMethods:
+      - GET
+      - POST
+      - PATCH
+      - OPTIONS
+    authorizers:
+      TeleCorpCognito:
+        type: jwt
+        identitySource: $request.header.Authorization
+        issuerUrl: https://cognito-idp.${aws:region}.amazonaws.com/${param:cognitoUserPoolId}
+        audience:
+        - ${param:cognitoClientId}
+  environment:
+    STATIONS_TABLE:
+      Ref: StationsTable
+    ANTENNAS_TABLE:
+      Ref: AntennasTable
+    EVENT_BUS_NAME: ${param:eventBusName, 'rtc-events-${sls:stage}'}
+    FRONTEND_ORIGIN: ${param:frontendOrigin}
+  iam:
+    role: arn:aws:iam::573505212581:role/LabRole
+functions:
+  networkInfrastructure:
+    name: ${self:service}-${sls:stage}
+    handler: network_infrastructure.lambda_handler
+    events:
+    - httpApi:
+        method: POST
+        path: /stations
+        authorizer:
+          name: TeleCorpCognito
+    - httpApi:
+        method: GET
+        path: /stations
+        authorizer:
+          name: TeleCorpCognito
+    - httpApi:
+        method: GET
+        path: /stations/{id}
+        authorizer:
+          name: TeleCorpCognito
+    - httpApi:
+        method: PATCH
+        path: /stations/{id}
+        authorizer:
+          name: TeleCorpCognito
+    - httpApi:
+        method: POST
+        path: /antennas
+        authorizer:
+          name: TeleCorpCognito
+    - httpApi:
+        method: GET
+        path: /antennas
+        authorizer:
+          name: TeleCorpCognito
+    - httpApi:
+        method: GET
+        path: /antennas/{id}
+        authorizer:
+          name: TeleCorpCognito
+    - httpApi:
+        method: PATCH
+        path: /antennas/{id}
+        authorizer:
+          name: TeleCorpCognito
+    - httpApi:
+        method: GET
+        path: /stations/{id}/antennas
+        authorizer:
+          name: TeleCorpCognito
+    - httpApi:
+        method: GET
+        path: /v1/infrastructure/antennas/{antenna_id}
+        authorizer:
+          type: aws_iam
+  publishAntennaLocation:
+    handler: publish_antenna_location.lambda_handler
+    timeout: 60
+resources:
+  Resources:
+    StationsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-${sls:stage}-stations
+        BillingMode: PAY_PER_REQUEST
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+        AttributeDefinitions:
+        - AttributeName: stationId
+          AttributeType: S
+        KeySchema:
+        - AttributeName: stationId
+          KeyType: HASH
+    AntennasTable:
+      Type: AWS::DynamoDB::Table
+      DeletionPolicy: Retain
+      UpdateReplacePolicy: Retain
+      Properties:
+        TableName: redtelecorp-antennas
+        BillingMode: PAY_PER_REQUEST
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+        AttributeDefinitions:
+        - AttributeName: antenna_id
+          AttributeType: S
+        - AttributeName: stationId
+          AttributeType: S
+        KeySchema:
+        - AttributeName: antenna_id
+          KeyType: HASH
+        GlobalSecondaryIndexes:
+        - IndexName: stationId-index
+          KeySchema:
+          - AttributeName: stationId
+            KeyType: HASH
+          Projection:
+            ProjectionType: KEYS_ONLY
+    LocationFailureQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: rtc-infrastructure-location-failures-${sls:stage}
+        SqsManagedSseEnabled: true
+        MessageRetentionPeriod: 1209600
+    AntennaLocationStream:
+      Type: AWS::Lambda::EventSourceMapping
+      Properties:
+        FunctionName:
+          Ref: PublishAntennaLocationLambdaFunction
+        EventSourceArn:
+          Fn::GetAtt:
+          - AntennasTable
+          - StreamArn
+        StartingPosition: TRIM_HORIZON
+        BatchSize: 10
+        BisectBatchOnFunctionError: true
+        MaximumRetryAttempts: 10
+        MaximumRecordAgeInSeconds: 82800
+        DestinationConfig:
+          OnFailure:
+            Destination:
+              Fn::GetAtt:
+              - LocationFailureQueue
+              - Arn
+    StationLocationStream:
+      Type: AWS::Lambda::EventSourceMapping
+      Properties:
+        FunctionName:
+          Ref: PublishAntennaLocationLambdaFunction
+        EventSourceArn:
+          Fn::GetAtt:
+          - StationsTable
+          - StreamArn
+        StartingPosition: TRIM_HORIZON
+        BatchSize: 10
+        BisectBatchOnFunctionError: true
+        MaximumRetryAttempts: 10
+        MaximumRecordAgeInSeconds: 82800
+        DestinationConfig:
+          OnFailure:
+            Destination:
+              Fn::GetAtt:
+              - LocationFailureQueue
+              - Arn

@@ -124,7 +124,6 @@ if [[ "$TARGET" == all || "$TARGET" == notifications ]]; then
   [[ -n "${IDENTITY_API_URL:-}" ]] || warn 'IDENTITY_API_URL vacía: no se podrán validar destinatarios.'
   [[ -n "${REPORTS_API_URL:-}" ]] || warn 'REPORTS_API_URL vacía: los eventos de incidentes no podrán resolver destinatarios.'
   [[ "$DELIVERY_ENABLED" == true ]] || warn 'Envío externo deshabilitado. Prueba las notificaciones con channels=["IN_APP"].'
-  [[ "$DELIVERY_ENABLED" != true || ( -n "${SES_FROM_ADDRESS:-}" && -n "${SES_IDENTITY:-}" ) ]] || fail 'Para DELIVERY_ENABLED=true configura SES_FROM_ADDRESS y SES_IDENTITY.'
 fi
 [[ "$ORACLE_ENABLED" != true || -n "${ORACLE_SECRET_ARN:-}" ]] || fail 'Para ORACLE_ENABLED=true configura ORACLE_SECRET_ARN.'
 
@@ -149,10 +148,9 @@ run_service() (
       [[ -z "${INFRASTRUCTURE_API_ARN:-}" ]] || parameters+=(--param="integrationApiArn=$INFRASTRUCTURE_API_ARN") ;;
     notifications)
       directory=notifications; service=rtc-notifications
-      parameters+=(--param="deliveryEnabled=$DELIVERY_ENABLED" --param="sesIdentity=${SES_IDENTITY:-unconfigured.invalid}")
+      parameters+=(--param="deliveryEnabled=$DELIVERY_ENABLED")
       [[ -z "${IDENTITY_API_URL:-}" ]] || parameters+=(--param="identityApiUrl=$IDENTITY_API_URL")
       [[ -z "${REPORTS_API_URL:-}" ]] || parameters+=(--param="reportsApiUrl=$REPORTS_API_URL")
-      [[ -z "${SES_FROM_ADDRESS:-}" ]] || parameters+=(--param="sesFromAddress=$SES_FROM_ADDRESS")
       [[ -z "${IDENTITY_API_ARN:-}" ]] || parameters+=(--param="integrationApiArn=$IDENTITY_API_ARN")
       [[ -z "${REPORTS_API_ARN:-}" ]] || parameters+=(--param="reportsApiArn=$REPORTS_API_ARN") ;;
   esac

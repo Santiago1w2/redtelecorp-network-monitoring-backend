@@ -1,0 +1,133 @@
+{
+  "id": "88486ef2-884d-43f9-bd72-b35e71f68445",
+  "name": "Red TeleCorp - flujo completo (completar)",
+  "values": [
+    {
+      "key": "identity_base_url",
+      "value": "",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "infrastructure_base_url",
+      "value": "",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "telemetry_base_url",
+      "value": "",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "coverage_base_url",
+      "value": "",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "reports_base_url",
+      "value": "",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "field_base_url",
+      "value": "",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "incidents_base_url",
+      "value": "",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "notifications_base_url",
+      "value": "",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "cognito_user_pool_id",
+      "value": "",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "cognito_client_id",
+      "value": "",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "cognito_id_token",
+      "value": "",
+      "type": "secret",
+      "enabled": true
+    },
+    {
+      "key": "antenna_id",
+      "value": "ANT-FLOW-001",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "station_id",
+      "value": "STA-FLOW-001",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "zone_id",
+      "value": "ZONE-FLOW-001",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "technician_id",
+      "value": "TEC-FLOW-001",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "recipient_id",
+      "value": "",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "report_id",
+      "value": "",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "incident_id",
+      "value": "",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "work_order_id",
+      "value": "",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "notification_id",
+      "value": "",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "telemetry_timestamp",
+      "value": "",
+      "type": "default",
+      "enabled": true
+    }
+  ],
+  "_postman_variable_scope": "environment"
+}

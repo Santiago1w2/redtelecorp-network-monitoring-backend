@@ -5,7 +5,7 @@ const {
   AdminAddUserToGroupCommand,
 } = require("@aws-sdk/client-cognito-identity-provider");
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
-const { DynamoDBDocumentClient, UpdateCommand } = require("@aws-sdk/lib-dynamodb");
+const { DynamoDBDocumentClient, UpdateCommand, GetCommand } = require("@aws-sdk/lib-dynamodb");
 
 const cognito = new CognitoIdentityProviderClient({});
 const ddbDocClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -21,12 +21,14 @@ const ROLES_VALIDOS = [
 exports.handler = async (event) => {
   try {
     const claims = event.requestContext.authorizer?.claims || {};
-    const gruposCaller = claims["cognito:groups"] || "";
+    let gruposCaller = claims['cognito:groups'] || [];
+    if (typeof gruposCaller === 'string') { try { gruposCaller = JSON.parse(gruposCaller); } catch (_) { gruposCaller = gruposCaller.replace(/^\[|\]$/g, '').split(','); } }
+    gruposCaller = Array.isArray(gruposCaller) ? gruposCaller.map(group => typeof group === 'string' ? group.trim() : '') : [];
 
     if (!gruposCaller.includes("admin")) {
       return {
         statusCode: 403,
-        headers: { "Access-Control-Allow-Origin": "*" },
+        headers: { "Access-Control-Allow-Origin": process.env.FRONTEND_ORIGIN || "" },
         body: JSON.stringify({ message: "Acceso denegado: Se requiere rol admin" }),
       };
     }
@@ -36,7 +38,7 @@ exports.handler = async (event) => {
     if (!userId || !email || !ROLES_VALIDOS.includes(nuevoRol)) {
       return {
         statusCode: 400,
-        headers: { "Access-Control-Allow-Origin": "*" },
+        headers: { "Access-Control-Allow-Origin": process.env.FRONTEND_ORIGIN || "" },
         body: JSON.stringify({
           message: "Parámetros inválidos",
           rolesPermitidos: ROLES_VALIDOS,
@@ -44,6 +46,8 @@ exports.handler = async (event) => {
       };
     }
 
+    const profile = await ddbDocClient.send(new GetCommand({ TableName: process.env.USERS_TABLE, Key: { userId }, ConsistentRead: true }));
+    if (!profile.Item || profile.Item.email.toLowerCase() !== email.toLowerCase()) return { statusCode: 400, body: JSON.stringify({ message: 'userId y email no corresponden' }) };
     const userPoolId = process.env.USER_POOL_ID;
 
     const gruposActuales = await cognito.send(
@@ -86,7 +90,7 @@ exports.handler = async (event) => {
 
     return {
       statusCode: 200,
-      headers: { "Access-Control-Allow-Origin": "*" },
+      headers: { "Access-Control-Allow-Origin": process.env.FRONTEND_ORIGIN || "" },
       body: JSON.stringify({
         message: `Rol actualizado exitosamente a ${nuevoRol}`,
         userId,
@@ -95,11 +99,11 @@ exports.handler = async (event) => {
       }),
     };
   } catch (error) {
-    console.error("Error asignando rol:", error);
+    console.error("identity_role_failed", error.name);
     return {
       statusCode: 500,
-      headers: { "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({ message: "Error interno al asignar rol", error: error.message }),
+      headers: { "Access-Control-Allow-Origin": process.env.FRONTEND_ORIGIN || "" },
+      body: JSON.stringify({ message: "Error interno al asignar rol" }),
     };
   }
 };
