@@ -34,7 +34,11 @@
 !/REPORTE_REVISION_MAIN_Y_ORACLE.md
 !/ARQUITECTURA_Y_OPERACION.md
 !/postman/
+!customer-reports/
+!/field-operations
+customer-reports/__pycache__/
 /postman/*
+!/network-infrastructure/
 !/postman/RedTeleCorp.postman_collection.json
 !/postman/RedTeleCorp.postman_environment.json
 !/postman/RedTeleCorp.full-flow.postman_collection.json
@@ -89,4 +93,6 @@ EC2_Y_POSTMAN
 !/scripts/
 /scripts/*
 !/scripts/prepare_antenna_simulator.py
+!/scripts/seed_lima_evidence.py
 !/docs/ANTENNA_SIMULATOR.md
+!/docs/EVIDENCIA_LIMA.md
