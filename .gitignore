@@ -1,6 +1,7 @@
 # Solo las tres APIs de services y las reglas de Git se versionan.
 /*
 !/.gitignore
+!/README.md
 !/services/
 
 # Handlers y Serverless de los microservicios existentes 02, 07 y 08.
